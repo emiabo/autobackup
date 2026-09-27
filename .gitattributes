@@ -1,0 +1,3 @@
+* text=auto
+# Must stay LF to run under bash, even when checked out on Windows.
+*.sh text eol=lf
