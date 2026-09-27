@@ -74,7 +74,7 @@ AutoBackup/
 
 Naming is `<name>_<machine><ext>`:
 
-- `<name>` is the job name, the `name =` override, or the subfolder name for `per_subfolder` jobs. Anything outside `A-Z a-z 0-9 . _ -` becomes `-`.
+- `<name>` is the job name, or the subfolder name for `per_subfolder` jobs. Anything outside `A-Z a-z 0-9 . _ -` becomes `-`.
 - With `keep` above 1, a timestamp is added: `obsidian_MyMac_2026-09-27_130512.tar.zst`.
 - With `chunk_size`, the archive is stored as numbered parts: `.tar.zst.001`, `.002`, ...
 - In `copy` mode the machine suffix goes before the extension (`Brewfile_MyMac`, `installed_MyPC.csv`).
@@ -168,7 +168,6 @@ Path expansion applies to `root`, `drive_root`, `state`, `staging`, and `pre`:
 | `compress` | `zstd` | `zstd`, `gzip`, `none` (plain `.tar`), or `copy` (see below). |
 | `level` | 3 (zstd), 6 (gzip) | Compression level. Use 1 for already-compressed data like game files. |
 | `every` | `1d` | Minimum time between passes. |
-| `skip_unchanged` | `true` | Skip the build when nothing changed since the last archive. |
 | `per_subfolder` | `false` | One archive per non-hidden subfolder of `root`, named after the subfolder. `include` is ignored. Top-level `exclude` patterns also filter subfolder names. |
 | `keep` | `1` | `1`: one archive, replaced on each change; rely on the sync service's version history. More than 1: timestamped archives, the newest `keep` are kept. |
 | `keep_max_size` | *(none)* | With `keep` above 1, also delete the oldest versions once their total size would pass this. The newest is always kept. |
@@ -176,7 +175,6 @@ Path expansion applies to `root`, `drive_root`, `state`, `staging`, and `pre`:
 | `alert_after` | 3× `every`, min `1d` | Notify when the job hasn't had a successful pass for this long. `0` turns it off. |
 | `skip_if_running` | *(none)* | Comma-separated process names. If any is running, skip and retry next run. |
 | `pre` | *(none)* | Command to run first (e.g. an inventory hook). |
-| `name` | job name | Archive base name. |
 | `enabled` | `true` | `false` skips the job. |
 
 **`copy` mode** doesn't archive. It copies each non-hidden file directly inside `root` (not recursive) to `dest`, renamed with the machine suffix, and only when its content changed. This keeps inventories readable in the sync service's web UI and on a phone.

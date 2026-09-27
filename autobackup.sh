@@ -577,7 +577,7 @@ write_file_list() {
 # ---------------------------------------------------------------- jobs
 
 # Per-job settings, filled in by run_job for archive_unit.
-J_METHOD=''; J_LEVEL=''; J_SKIP=''; J_KEEP=1; J_KEEPMAX=''; J_CHUNK=''; J_GIT=''; J_DESTDIR=''
+J_METHOD=''; J_LEVEL=''; J_KEEP=1; J_KEEPMAX=''; J_CHUNK=''; J_GIT=''; J_DESTDIR=''
 
 # archive_unit KEY NAME ROOT
 # Uses globals AB_U_INC (paths relative to ROOT), AB_U_EXC (tar patterns) and the J_* settings.
@@ -604,7 +604,7 @@ archive_unit() {
     for i in "${incs[@]}"; do desc="$desc"$'\n'"include=$i"; done
     for e in "${AB_U_EXC[@]}"; do desc="$desc"$'\n'"exclude=$e"; done
 
-    if [ "$opt_force" -eq 0 ] && is_true "$J_SKIP" && [ -e "$stamp" ] \
+    if [ "$opt_force" -eq 0 ] && [ -e "$stamp" ] \
         && [ -n "$(unit_versions "$J_DESTDIR" "$base" "$ext" "$J_KEEP")" ]; then
         if [ "$desc" = "$(cat "$stamp")" ]; then
             local paths=() hit
@@ -749,7 +749,6 @@ run_job() {
         log ERROR "[$job] bad chunk_size '$v' (use e.g. 500M, 4G)"; return 1
     fi
     J_GIT=$(cfg_get "$job" gitignore true)
-    J_SKIP=$(cfg_get "$job" skip_unchanged true)
     J_DESTDIR="$AB_DRIVE/$dest"
     every=$(cfg_get "$job" every 1d)
 
@@ -806,10 +805,7 @@ run_job() {
         AB_U_INC=()
         while IFS= read -r l; do AB_U_INC+=("$l"); done < <(cfg_vals "$job" include)
         [ ${#AB_U_INC[@]} -eq 0 ] && AB_U_INC=(.)
-        local name
-        name=$(cfg_vals "$job" name | tail -n 1)
-        [ -z "$name" ] && name="$job"
-        archive_unit "$job" "$name" "$root" || fail=1
+        archive_unit "$job" "$job" "$root" || fail=1
     fi
 
     if [ $fail -eq 0 ] && [ "$opt_dry" -eq 0 ]; then

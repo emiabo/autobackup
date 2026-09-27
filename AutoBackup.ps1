@@ -597,7 +597,7 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$uroot) {
     foreach ($e in $script:UExc) { $desc += "exclude=$e" }
     $descText = $desc -join "`n"
 
-    if (-not $script:OptForce -and (Test-True $J.Skip) -and (Test-Path -LiteralPath $stamp) -and
+    if (-not $script:OptForce -and (Test-Path -LiteralPath $stamp) -and
         @(Get-UnitVersions $J.DestDir $base $ext $J.Keep).Count -gt 0) {
         if ($descText -eq ([IO.File]::ReadAllText($stamp, $script:Utf8).TrimEnd())) {
             $since = Get-MTime $stamp
@@ -749,7 +749,7 @@ function Invoke-Job([string]$job) {
     }
     $script:J = @{
         Method = $method; Level = $level; Keep = [int]$keepRaw; KeepMax = $keepMax; Chunk = $chunk
-        Git = (Get-Cfg $job 'gitignore' 'true'); Skip = (Get-Cfg $job 'skip_unchanged' 'true')
+        Git = (Get-Cfg $job 'gitignore' 'true')
         DestDir = (Join-Path $script:Drive (ConvertTo-NativePath $dest))
     }
     $every = Get-Cfg $job 'every' '1d'
@@ -804,9 +804,7 @@ function Invoke-Job([string]$job) {
     } else {
         $script:UInc = @(Get-CfgVals $job 'include')
         if ($script:UInc.Count -eq 0) { $script:UInc = @('.') }
-        $name = @(Get-CfgVals $job 'name')
-        if ($name.Count -gt 0 -and $name[-1]) { $name = $name[-1] } else { $name = $job }
-        if (-not (Invoke-ArchiveUnit $job $name $root)) { $ok = $false }
+        if (-not (Invoke-ArchiveUnit $job $job $root)) { $ok = $false }
     }
 
     if ($ok -and -not $script:OptDry) {
