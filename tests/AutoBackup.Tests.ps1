@@ -28,6 +28,9 @@ Describe '<Impl>' -ForEach $impls {
 
         # Runs the script under test. Flags are written bash-style and translated for PowerShell.
         function Invoke-AB([string[]]$Flags) {
+            # Windows PowerShell 5.1 turns a native command's stderr into error records under 2>&1,
+            # which would stop the test; the scripts write errors to stderr on purpose.
+            $ErrorActionPreference = 'Continue'
             if ($Impl -eq 'bash') {
                 $out = & $bash (Join-Path $repo 'autobackup.sh') --config $conf @Flags 2>&1
             } else {
