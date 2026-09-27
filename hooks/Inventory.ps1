@@ -1,6 +1,6 @@
 <#
   Writes app-inventory text files into -OutDir (default: %LOCALAPPDATA%\AutoBackup\inventory).
-  Used as the `pre` command of the [app-inventory] job in win.conf. PowerShell 5.1 and 7. ASCII-only.
+  Used as the `pre` command of the [app-inventory] job on Windows. PowerShell 5.1 and 7. ASCII-only.
   Output is deterministic (no timestamps) so unchanged inventories are not re-uploaded.
 
     winget.json       winget export: only packages winget can match to a source (reinstallable

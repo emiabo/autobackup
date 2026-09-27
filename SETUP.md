@@ -4,174 +4,137 @@
 
 A fixed-time schedule fails whenever the machine is asleep or off at that time. cron on macOS skips missed runs entirely, and Task Scheduler only catches up if a specific setting is on.
 
-So the scheduler here does nothing clever. It starts the script **every hour** and **at login/boot**. The script decides per job whether work is needed:
+So the scheduler here does nothing clever. It starts the script **every hour** and **at login**. The script decides per job whether work is needed:
 
 1. **Due check.** Each job has `every` (e.g. `1d`, `7d`). The script compares that to the job's last successful pass (`stamps/<job>.checked`). Not due means exit in milliseconds.
 2. **Changed check.** If due, it looks for any file newer than the last archive. Nothing newer means it records a successful pass without uploading anything.
-3. **Build.** Only then does it tar, compress, and move the archive into the Proton folder.
+3. **Build.** Only then does it tar, compress, and move the archive into the sync folder.
 
-The result: a daily job runs within about an hour of the Mac or PC first being awake after 24 hours have passed. That holds no matter when it slept or shut down.
+The result: a daily job runs within about an hour of the computer first being awake after 24 hours have passed. That holds no matter when it slept or shut down.
 
-A lock (a lock dir on Mac, a named mutex on Windows) stops the hourly run from colliding with a manual one.
+A lock (a lock dir on macOS/Linux, a named mutex on Windows) stops the hourly run from colliding with a manual one.
 
-## Proton Drive (both machines)
+## The sync service
 
-1. Make the root folder: create `AutoBackup` inside your Proton Drive sync folder. The scripts create subfolders themselves.
-2. Set version-history retention at proton.me > Drive > Settings.
-   - Every archive keeps one filename, so Proton's version history is the snapshot history.
-   - Old versions use quota. With about 14 GB of weekly game archives, 3 months of history is roughly 180 GB worst case. Pick a period that fits your 520 GB.
-3. After the first two real runs, check that versions accumulate. Open any archive in the Proton web app, then open Version history. It should list two entries, not one. See README > Not done yet.
+1. **Make the root folder.** Create `AutoBackup` inside your sync folder, and put its path in `drive_root`. The scripts create subfolders themselves.
+2. **Decide on version history.**
+   - With `keep = 1` (the default), every archive keeps one filename. The service's version history is then the snapshot history. Check its retention setting and how much quota old versions use; for example, 14 GB of weekly game archives over 3 months is roughly 180 GB worst case.
+   - If the service keeps no usable history (iCloud Drive, or a free tier with short retention), set `keep = 5` (or similar) in `[global]` so the script keeps timestamped copies itself. `keep_max_size` caps their total size.
+3. **Consider online-only.** Marking `AutoBackup/` online-only in the sync app frees the local copy of each archive after upload.
+4. **Check after the first two real runs.** For a `keep = 1` job, open any archive in the service's web app and look at its version history. It should list two entries, not one.
 
 ## macOS
 
 ### 1. Install
 
-```fish
-# Put the folder somewhere stable, then:
-cd ~/Code/autobackup
-chmod +x mac-backup.fish mac-backup.sh hooks/mac-inventory.sh
-brew install zstd   # optional; without it the script uses tar's built-in zstd, or falls back to gzip
+```sh
+cd ~/Code/autobackup-scripts
+brew install zstd              # optional; without it archives fall back to .tar.gz (macOS tar has no zstd)
+./autobackup.sh --edit         # creates ~/.config/autobackup/autobackup.conf; set drive_root and machine
+ls ~/Library/CloudStorage      # helps find your sync folder's name
+./autobackup.sh --list
+./autobackup.sh --dry-run -v   # shows every archive it would write, and skipped includes
+./autobackup.sh --install
 ```
 
-### 2. Configure and test by hand
+`--install` writes `~/Library/LaunchAgents/local.autobackup.plist` and loads it. It runs `/bin/bash autobackup.sh --config <your config>`:
 
-```fish
-cp templates/mac.conf mac.conf
-ls ~/Library/CloudStorage          # find your sync folder's name for drive_root
-./mac-backup.fish --edit           # set drive_root, machine, and enable the jobs you want
-./mac-backup.fish --list
-./mac-backup.fish --dry-run -v     # shows every archive it would write, and skipped includes
-./mac-backup.fish --force          # first real run
-./mac-backup.fish --list           # everything should now say "ok"
-```
+- **At once and at every login** (`RunAtLoad`).
+- **Hourly while awake** (`StartInterval`). After a wake, the next check is at most an hour away.
+- **At low priority** (`Nice`, `LowPriorityIO`).
 
-### 3. LaunchAgent
+A LaunchAgent (not a LaunchDaemon) runs as you, only while you're logged in. That's correct here: your home folder and the sync folder are only reachable in your session. macOS shows a "Background item added" notice, and the agent appears under System Settings > General > Login Items & Extensions.
 
-A LaunchAgent (not a LaunchDaemon) runs as you, in your login session, only while you're logged in. That's correct here: the Proton folder and your home folder are only reachable in your session.
+Check on it:
 
-`RunAtLoad` fires at login. `StartInterval` fires hourly while awake. After a wake, the next check is at most an hour away.
-
-Save this as `~/Library/LaunchAgents/local.autobackup.plist`. Replace `YOU` with your short username (`whoami`).
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>local.autobackup</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/opt/homebrew/bin/fish</string>
-        <string>/Users/YOU/Code/autobackup/mac-backup.fish</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>StartInterval</key>
-    <integer>3600</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-    <key>LowPriorityIO</key>
-    <true/>
-    <key>Nice</key>
-    <integer>10</integer>
-    <key>StandardOutPath</key>
-    <string>/Users/YOU/.local/state/autobackup/launchd.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/YOU/.local/state/autobackup/launchd.log</string>
-</dict>
-</plist>
-```
-
-Load it and trigger one run now:
-
-```fish
-launchctl bootstrap gui/(id -u) ~/Library/LaunchAgents/local.autobackup.plist
-launchctl kickstart -k gui/(id -u)/local.autobackup
+```sh
 launchctl print gui/(id -u)/local.autobackup | grep -E 'state|last exit code'
 tail ~/.local/state/autobackup/autobackup.log ~/.local/state/autobackup/launchd.log
 ```
 
-After editing the plist, run `launchctl bootout gui/(id -u)/local.autobackup`, then `bootstrap` again. Editing the scripts or `mac.conf` needs no reload.
+(That's fish syntax; in bash or zsh, use `$(id -u)`.)
 
-macOS will show a "Background item added" notice. The agent also appears under System Settings > General > Login Items & Extensions.
+Editing the scripts or the config needs no reinstall. Moving the repo folder does: run `--install` again from the new location. `--uninstall` removes the agent.
 
-### 4. Privacy permissions (TCC)
+### 2. Privacy permissions (TCC)
 
-A launchd job doesn't inherit your terminal's permissions. If a scheduled run logs `Operation not permitted` on a path that works when you run the script by hand, TCC is blocking it. This is most likely for a vault under `~/Documents` or `~/Desktop`, or for the CloudStorage folder.
+A launchd job doesn't inherit your terminal's permissions. If a scheduled run logs `Operation not permitted` on a path that works when you run the script by hand, TCC is blocking it. This is most likely for folders under `~/Documents` or `~/Desktop`, or for `~/Library/CloudStorage`.
 
-- **First try:** run `kickstart` (above) while at the Mac and approve any prompt that appears.
-- **If there's no prompt:** go to System Settings > Privacy & Security > Full Disk Access and add the interpreter. Homebrew's fish binary lives at a versioned Cellar path (`realpath (command -v fish)`), and every `brew upgrade fish` changes that path and silently drops the grant.
-- **Stable alternative:** point the plist at `/bin/bash` + `mac-backup.sh`, and grant Full Disk Access to `/bin/bash` once. That path never changes. The trade-off is that you must propagate script edits from the fish file to the bash file. Config edits apply to both automatically.
+- **First try:** watch the first scheduled run (it starts right after `--install`) and approve any prompt that appears.
+- **If there's no prompt:** go to System Settings > Privacy & Security > Full Disk Access and add `/bin/bash` (press ⌘⇧G in the file picker to type the path). The agent always runs through `/bin/bash`, a path that never changes, so the grant survives updates.
 
-### 5. Alfred
+### 3. Run a job on demand
 
-Replace the old Obsidian script's command with:
+From a launcher like Alfred or Raycast, or a shell alias:
 
 ```sh
-/opt/homebrew/bin/fish ~/Code/autobackup/mac-backup.fish --only obsidian
+~/Code/autobackup-scripts/autobackup.sh --only obsidian
 ```
 
-`--only` ignores the schedule but still skips the upload when the vault hasn't changed. Add `--force` to always rebuild.
+`--only` ignores the schedule but still skips the upload when nothing changed. Add `--force` to always rebuild.
+
+## Linux
+
+Same steps as macOS:
+
+```sh
+./autobackup.sh --edit && ./autobackup.sh --dry-run -v && ./autobackup.sh --install
+```
+
+`--install` writes `autobackup.service` and `autobackup.timer` to `~/.config/systemd/user/` and enables the timer. It runs 2 minutes after login, then hourly, at idle I/O priority. Output also goes to the journal:
+
+```sh
+systemctl --user list-timers autobackup.timer
+journalctl --user -u autobackup.service -n 50
+```
+
+User timers only run while you're logged in, which matches the macOS behavior. Without systemd, `--install` prints a crontab line to add instead.
+
+Recommended packages:
+
+- `zstd` for multithreaded compression.
+- `libarchive-tools` (bsdtar), so excludes and archive details match macOS and Windows exactly. GNU tar works too.
+- `libnotify` (`notify-send`) for notifications.
 
 ## Windows
 
 ### 1. Install
 
-```powershell
-# Put the folder at e.g. $HOME\Code\autobackup, then from that folder:
-Get-ChildItem -Recurse | Unblock-File     # clears the downloaded-file flag
-winget install -e --id Meta.Zstandard     # optional; see below
-& "$env:SystemRoot\System32\tar.exe" --version
-```
-
-The script always uses Windows' own `tar.exe`, never Git for Windows' GNU tar, because exclude patterns behave differently between the two. If `tar --version` lists `libzstd`, the built-in tar can do zstd alone. Otherwise the zstd CLI from winget handles it. With neither available, archives fall back to `.tar.gz`.
-
-The script compresses in two steps (tar to a temp file, then zstd) instead of piping. Piping tar into zstd on Windows is reported to hang on inputs over a few hundred MB.
-
-### 2. Configure and test by hand
-
-Works in both `pwsh` (7) and `powershell` (5.1).
+Works in both `powershell` (5.1) and `pwsh` (7).
 
 ```powershell
-Copy-Item templates\win.conf win.conf
-.\win-backup.ps1 -Edit              # set drive_root, machine, and enable the jobs you want
-.\win-backup.ps1 -List
-.\win-backup.ps1 -DryRun -Verbose
-.\win-backup.ps1 -Force             # first real run; Minecraft at level 1 is the slow one
+cd $HOME\Code\autobackup-scripts
+Get-ChildItem -Recurse | Unblock-File   # only needed if you downloaded a zip
+winget install -e --id Meta.Zstandard   # optional; see below
+.\AutoBackup.ps1 -Edit                  # creates %APPDATA%\AutoBackup\autobackup.conf; set drive_root and machine
+.\AutoBackup.ps1 -List
+.\AutoBackup.ps1 -DryRun -Verbose
+.\AutoBackup.ps1 -Install
 ```
 
-### 3. Scheduled task
+**tar and zstd.** The script always uses Windows' own `tar.exe`, never Git for Windows' GNU tar, so behavior matches the other platforms.
 
-Run this once from an **admin** PowerShell. Admin is only needed to register the logon trigger; the task itself runs as you, unelevated, only while you're logged in.
+- If `tar.exe --version` lists `libzstd`, the built-in tar can do zstd alone.
+- Otherwise the zstd CLI from winget handles it.
+- With neither available, archives fall back to `.tar.gz`.
 
-```powershell
-$dir = "$HOME\Code\autobackup"
-$exe = (Get-Command pwsh).Source   # or "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-$action = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $dir `
-    -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$dir\win-backup.ps1`""
-$triggers = @(
-    New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Hours 1)
-)
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 3)
-Register-ScheduledTask -TaskName 'AutoBackup' -Action $action -Trigger $triggers -Settings $settings `
-    -Description 'Hourly check; jobs run when due. Config: win.conf next to win-backup.ps1.'
-Start-ScheduledTask -TaskName 'AutoBackup'
-```
+### 2. The scheduled task
 
-What each piece does:
+`-Install` registers a task named `AutoBackup`:
 
-- **`-StartWhenAvailable`** is the GUI's "Run task as soon as possible after a scheduled start is missed." It covers the PC being off or asleep at the top of the hour.
-- **`-AtLogOn`** covers first boot of the day.
-- **`-MultipleInstances IgnoreNew`** stops a slow Minecraft run from stacking up. The script's own mutex covers manual runs too.
+- **Runs as you, unelevated, only while you're logged in.**
+- **Triggers:** at logon, plus a repeating hourly trigger.
+- **Catch-up:** "Run task as soon as possible after a scheduled start is missed" (`-StartWhenAvailable`) covers the PC being off or asleep at the top of the hour.
+- **No stacking:** a slow run blocks the next one (`-MultipleInstances IgnoreNew`). The script's own mutex covers manual runs too.
+- **Interpreter:** Windows PowerShell 5.1 (`powershell.exe`), even if you ran `-Install` from pwsh. It's always present and can show toast notifications without extra modules.
 
-Verify it:
+If registration fails with "Access is denied", run `-Install` once from an admin PowerShell. The task still runs as you, unelevated.
+
+Check on it:
 
 - Open Task Scheduler > AutoBackup > Triggers. The one-time trigger should say "repeat every 1 hour indefinitely". If it shows a duration, edit it to Indefinitely.
 - Check the log: `Get-Content "$env:LOCALAPPDATA\AutoBackup\state\autobackup.log" -Tail 20`.
 
-`-WindowStyle Hidden` still flashes a console window for a split second each hour. To remove the flash, change the action's program to `conhost.exe`, with arguments `--headless "<path to pwsh.exe>" -NoProfile ...` (the same arguments as above).
+`-WindowStyle Hidden` still flashes a console window for a split second each hour. To remove the flash, edit the task's action: set the program to `conhost.exe`, and put `--headless "<path to powershell.exe>"` in front of the existing arguments.
 
-Failure notifications on Windows are optional: `Install-Module BurntToast -Scope CurrentUser` and the script will use it. Without it, failures only appear in the log.
+`-Uninstall` removes the task.
