@@ -227,7 +227,7 @@ To get an older snapshot, restore that version in the sync service first (its ve
 |---|---|
 | **macOS** (tier 1) | Ran on macOS with `/bin/bash` 3.2 and bsdtar 3.5: plain, `per_subfolder`, `copy`, `.gitignore`, `keep` / `keep_max_size`, `chunk_size`, and the alerts. `--install` itself hasn't been run yet. |
 | **Windows** (tier 1) | `AutoBackup.ps1` passed the same fixture run under PowerShell 7 on macOS with bsdtar. It has never run on Windows or under 5.1. The toast, Task Scheduler and `tar.exe` paths are untested. |
-| **Linux** (tier 2) | Supported by `autobackup.sh` (GNU `stat`/`date`, GNU or bsdtar, systemd timer, `notify-send`) but not tested yet. |
+| **Linux** (tier 2) | Same fixture run passed in a Debian container (colima), once with GNU tar 1.35 and once with bsdtar 3.7.4, including the inventory hook. `--install` wrote systemd units that pass `systemd-analyze verify`, but the timer hasn't run under a real user session, and `notify-send` is untested. |
 
 ## Working on this
 
@@ -251,7 +251,7 @@ Testing without touching real data: point `--config` at a test config whose `dri
 **Never run for real**
 
 - Neither script has run against a real sync folder or from its scheduler.
-- `hooks/Inventory.ps1` has only been parse-checked. The Linux half of `hooks/inventory.sh` is untested.
+- `hooks/Inventory.ps1` has only been parse-checked. The Linux half of `hooks/inventory.sh` has only run on Debian (apt).
 
 **To verify per sync service**
 
