@@ -1,0 +1,53 @@
+# Lint, then run tests/AutoBackup.Tests.ps1 on each platform. Free on public repos (standard runners).
+name: test
+
+on:
+  push:
+    paths-ignore: ['**.md']
+  pull_request:
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck autobackup.sh hooks/inventory.sh
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $r = @(Invoke-ScriptAnalyzer -Path AutoBackup.ps1 -Settings ./PSScriptAnalyzerSettings.psd1) +
+               @(Invoke-ScriptAnalyzer -Path hooks -Recurse -Settings ./PSScriptAnalyzerSettings.psd1)
+          $r | Format-Table RuleName, ScriptName, Line, Message -Wrap
+          if ($r.Count) { exit 1 }
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, shell: pwsh }            # bash 3.2 + PowerShell 7
+          - { os: ubuntu-latest, shell: pwsh }           # bash with GNU tar
+          - { os: windows-latest, shell: pwsh }          # PowerShell 7
+          - { os: windows-latest, shell: powershell }    # Windows PowerShell 5.1
+    name: test (${{ matrix.os }}, ${{ matrix.shell }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Pester
+        run: |
+          if ($PSVersionTable.PSVersion.Major -lt 6) {
+            [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
+            Install-PackageProvider NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          }
+          Install-Module Pester -MinimumVersion 5.5 -Force -Scope CurrentUser -SkipPublisherCheck
+      - name: Run tests
+        run: |
+          Import-Module Pester -MinimumVersion 5.5
+          Invoke-Pester ./tests -Output Detailed -CI

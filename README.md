@@ -244,7 +244,33 @@ Constraints:
   - Use 2-arg `Join-Path`.
   - Functions return `$true`/`$false`. All logging goes through `[Console]::Out` or `Error` (`Write-Log`, `Say`), never `Write-Output`, so return values stay clean.
 
-Testing without touching real data: point `--config` at a test config whose `drive_root`, `state` and `staging` live in a scratch folder. `AUTOBACKUP_TAR` overrides the tar binary. For example, `AUTOBACKUP_TAR=/usr/bin/tar pwsh AutoBackup.ps1 ...` exercises the Windows script on macOS with the same bsdtar.
+### Tests and lint
+
+`tests/AutoBackup.Tests.ps1` is one [Pester](https://pester.dev) suite that runs the same black-box cases against both scripts. Each case builds a folder tree in a temp dir, runs the script with a throwaway config, and checks the archives. One suite for both scripts is what keeps them mirrored: a behavior change has to pass in both.
+
+```sh
+pwsh -c 'Install-Module Pester, PSScriptAnalyzer -Scope CurrentUser'   # once
+brew install shellcheck                                       # or your distro's package
+
+pwsh -c 'Invoke-Pester ./tests -Output Detailed'
+shellcheck autobackup.sh hooks/inventory.sh
+pwsh -c 'Invoke-ScriptAnalyzer -Path AutoBackup.ps1 -Settings ./PSScriptAnalyzerSettings.psd1'
+```
+
+`PSScriptAnalyzerSettings.psd1` turns off rules meant for modules, and rules that flag deliberate choices; each has a comment saying why.
+
+GitHub Actions (`.github/workflows/test.yml`) runs lint on Ubuntu and the tests on:
+
+- **macOS:** bash 3.2 and PowerShell 7.
+- **Ubuntu:** bash with GNU tar.
+- **Windows:** PowerShell 7 and Windows PowerShell 5.1.
+
+Standard runners are free for public repos.
+
+For manual runs, point `--config` at a test config whose `drive_root`, `state` and `staging` live in a scratch folder. Two environment variables help:
+
+- `AUTOBACKUP_NOTIFY=0` silences notifications.
+- `AUTOBACKUP_TAR` overrides the tar binary.
 
 ## Not done yet
 

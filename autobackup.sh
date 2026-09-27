@@ -119,6 +119,7 @@ joined() {
 # ~ at the start, {here} (this script's folder) and {machine} are expanded.
 expand_path() {
     local p="$1"
+    # shellcheck disable=SC2088  # matching a literal ~, not expanding it
     case "$p" in
         "~") p="$HOME" ;;
         "~/"*) p="$HOME/${p#\~/}" ;;
@@ -183,7 +184,9 @@ fmt_epoch() {
     if [ "$AB_OS" = Darwin ]; then date -r "$1" '+%Y-%m-%d %H:%M'; else date -d "@$1" '+%Y-%m-%d %H:%M'; fi
 }
 
+# AUTOBACKUP_NOTIFY=0 turns notifications off (the test suite uses it).
 notify() {
+    [ "$AUTOBACKUP_NOTIFY" = 0 ] && return 0
     if [ "$AB_OS" = Darwin ]; then
         osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "AutoBackup"' \
             -e 'end run' "$1" >/dev/null 2>&1
@@ -389,20 +392,20 @@ write_out() {
 build_archive() {
     local method="$1" level="$2" out="$3" chunk="$4" root="$5" st
     shift 5
-    local base=(-c -f - -C "$root")
-    [ "$AB_OS" = Darwin ] && base+=(--no-mac-metadata)
+    local tar_cmd=("$AB_TAR" -c -f - -C "$root")
+    [ "$AB_OS" = Darwin ] && tar_cmd+=(--no-mac-metadata)
     case "$method" in
         zstd-ext)
-            "$AB_TAR" "${base[@]}" "$@" | zstd -q -T0 "-$level" -c | write_out "$out" "$chunk"
+            "${tar_cmd[@]}" "$@" | zstd -q -T0 "-$level" -c | write_out "$out" "$chunk"
             st=("${PIPESTATUS[@]}") ;;
         zstd-native)
-            "$AB_TAR" "${base[@]}" --zstd --options "zstd:compression-level=$level" "$@" | write_out "$out" "$chunk"
+            "${tar_cmd[@]}" --zstd --options "zstd:compression-level=$level" "$@" | write_out "$out" "$chunk"
             st=("${PIPESTATUS[@]}" 0) ;;
         gzip)
-            "$AB_TAR" "${base[@]}" "$@" | gzip "-$level" -c | write_out "$out" "$chunk"
+            "${tar_cmd[@]}" "$@" | gzip "-$level" -c | write_out "$out" "$chunk"
             st=("${PIPESTATUS[@]}") ;;
         none)
-            "$AB_TAR" "${base[@]}" "$@" | write_out "$out" "$chunk"
+            "${tar_cmd[@]}" "$@" | write_out "$out" "$chunk"
             st=("${PIPESTATUS[@]}" 0) ;;
         *) return 1 ;;
     esac

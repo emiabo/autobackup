@@ -201,8 +201,9 @@ $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($xml))
 '@
 
+# AUTOBACKUP_NOTIFY=0 turns notifications off (the test suite uses it).
 function Send-Notify([string]$msg) {
-    if (-not $script:IsWin) { return }
+    if (-not $script:IsWin -or $env:AUTOBACKUP_NOTIFY -eq '0') { return }
     try {
         if ($PSVersionTable.PSEdition -ne 'Core') {
             & ([scriptblock]::Create($script:ToastCode)) $msg
