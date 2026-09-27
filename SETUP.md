@@ -28,7 +28,7 @@ A lock (a lock dir on macOS/Linux, a named mutex on Windows) stops the hourly ru
 ### 1. Install
 
 ```sh
-cd ~/Code/autobackup-scripts
+cd ~/Code/autobackup
 brew install zstd              # optional; without it archives fall back to .tar.gz (macOS tar has no zstd)
 ./autobackup.sh --edit         # creates ~/.config/autobackup/autobackup.conf; set drive_root and machine
 ls ~/Library/CloudStorage      # helps find your sync folder's name
@@ -68,7 +68,7 @@ A launchd job doesn't inherit your terminal's permissions. If a scheduled run lo
 From a launcher like Alfred or Raycast, or a shell alias:
 
 ```sh
-~/Code/autobackup-scripts/autobackup.sh --only obsidian
+~/Code/autobackup/autobackup.sh --only obsidian
 ```
 
 `--only` ignores the schedule but still skips the upload when nothing changed. Add `--force` to always rebuild.
@@ -103,7 +103,7 @@ Recommended packages:
 Works in both `powershell` (5.1) and `pwsh` (7).
 
 ```powershell
-cd $HOME\Code\autobackup-scripts
+cd $HOME\Code\autobackup
 Get-ChildItem -Recurse | Unblock-File   # only needed if you downloaded a zip
 winget install -e --id Meta.Zstandard   # optional; see below
 .\AutoBackup.ps1 -Edit                  # creates %APPDATA%\AutoBackup\autobackup.conf; set drive_root and machine

@@ -16,7 +16,7 @@ Principles:
 macOS or Linux:
 
 ```sh
-git clone <this repo> ~/Code/autobackup-scripts && cd ~/Code/autobackup-scripts
+git clone https://github.com/emiabo/autobackup.git ~/Code/autobackup && cd ~/Code/autobackup
 ./autobackup.sh --edit       # creates ~/.config/autobackup/autobackup.conf from the template
 ./autobackup.sh --dry-run -v # check what it would write
 ./autobackup.sh --install    # hourly + at login
@@ -25,7 +25,7 @@ git clone <this repo> ~/Code/autobackup-scripts && cd ~/Code/autobackup-scripts
 Windows (PowerShell 5.1 or 7):
 
 ```powershell
-cd $HOME\Code\autobackup-scripts
+git clone https://github.com/emiabo/autobackup.git $HOME\Code\autobackup; cd $HOME\Code\autobackup
 .\AutoBackup.ps1 -Edit       # creates %APPDATA%\AutoBackup\autobackup.conf from the template
 .\AutoBackup.ps1 -DryRun -Verbose
 .\AutoBackup.ps1 -Install    # hourly + at logon
@@ -280,3 +280,7 @@ Testing without touching real data: point `--config` at a test config whose `dri
 **Not in scope**
 
 - Full-disk images (Time Machine, Windows system images) are a separate layer.
+
+## License
+
+[Mozilla Public License 2.0](LICENSE).
