@@ -1,5 +1,7 @@
 # AutoBackup
 
+[![test](https://github.com/emiabo/autobackup/actions/workflows/test.yml/badge.svg)](https://github.com/emiabo/autobackup/actions/workflows/test.yml)
+
 Config-driven backup scripts that archive chosen folders with `tar` and drop the archives into a cloud sync folder: Proton Drive, iCloud Drive, Dropbox, Google Drive, OneDrive, or anything else that syncs a local folder. The sync app does the uploading, so there are no APIs, accounts or credentials to manage.
 
 It started as an automated version of a manual habit: zip the Obsidian vault now and then, in case Obsidian Sync overwrites something. Tools like restic and kopia are the better fit for S3/B2-style object storage. This is for consumer sync folders, where every backup should be one ordinary file you can open anywhere.
@@ -225,9 +227,9 @@ To get an older snapshot, restore that version in the sync service first (its ve
 
 | | Status |
 |---|---|
-| **macOS** (tier 1) | Ran on macOS with `/bin/bash` 3.2 and bsdtar 3.5: plain, `per_subfolder`, `copy`, `.gitignore`, `keep` / `keep_max_size`, `chunk_size`, and the alerts. `--install` itself hasn't been run yet. |
-| **Windows** (tier 1) | `AutoBackup.ps1` passed the same fixture run under PowerShell 7 on macOS with bsdtar. It has never run on Windows or under 5.1. The toast, Task Scheduler and `tar.exe` paths are untested. |
-| **Linux** (tier 2) | Same fixture run passed in a Debian container (colima), once with GNU tar 1.35 and once with bsdtar 3.7.4, including the inventory hook. `--install` wrote systemd units that pass `systemd-analyze verify`, but the timer hasn't run under a real user session, and `notify-send` is untested. |
+| **macOS** (tier 1) | The test suite passes in CI and locally with `/bin/bash` 3.2 and bsdtar, for both scripts. Not yet run for real: `--install`, notifications, and privacy permissions. |
+| **Windows** (tier 1) | The test suite passes in CI on Windows with the built-in `tar.exe`, under both Windows PowerShell 5.1 and PowerShell 7. Not yet run for real: `-Install` (Task Scheduler), toasts, and the inventory hook. |
+| **Linux** (tier 2) | The test suite passes in CI on Ubuntu with GNU tar. A Debian container run also covered bsdtar and the inventory hook. `--install` wrote systemd units that pass `systemd-analyze verify`, but the timer hasn't run under a real user session, and `notify-send` is untested. |
 
 ## Working on this
 
