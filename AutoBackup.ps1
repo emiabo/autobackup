@@ -20,7 +20,7 @@
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
-    # Config file (default: %APPDATA%\AutoBackup\autobackup.conf, or $env:AUTOBACKUP_CONFIG)
+    # Config file (default: %APPDATA%\AutoBackup\autobackup.ini, or $env:AUTOBACKUP_CONFIG)
     [string]$Config,
     # Run only these jobs, even if not due. Skip-if-unchanged still applies.
     [string[]]$Only,
@@ -66,10 +66,13 @@ $script:OptDry = [bool]$DryRun
 $script:OptOnly = @()
 $script:TaskName = 'AutoBackup'
 
-if ($env:APPDATA) { $script:CfgPath = Join-Path $env:APPDATA 'AutoBackup\autobackup.conf' }
-else { $script:CfgPath = Join-Path $HOME '.config/autobackup/autobackup.conf' }
+if ($env:APPDATA) { $script:CfgPath = Join-Path $env:APPDATA 'AutoBackup\autobackup.ini' }
+else { $script:CfgPath = Join-Path $HOME '.config/autobackup/autobackup.ini' }
 if ($env:AUTOBACKUP_CONFIG) { $script:CfgPath = $env:AUTOBACKUP_CONFIG }
-$script:Template = Join-Path (Join-Path $script:Here 'templates') 'windows.conf'
+$script:Template = Join-Path (Join-Path $script:Here 'templates') 'windows.ini'
+# Known folders and what to back up in them. AUTOBACKUP_PRESETS points elsewhere (the tests use it).
+$script:Presets = Join-Path $script:Here 'presets.ini'
+if ($env:AUTOBACKUP_PRESETS) { $script:Presets = $env:AUTOBACKUP_PRESETS }
 if ($env:AUTOBACKUP_TAR) {
     $script:Tar = $env:AUTOBACKUP_TAR
 } elseif ($script:IsWin) {
@@ -94,7 +97,7 @@ Usage: AutoBackup.ps1 [options]
 Runs every job in the config that is due. Meant to be called hourly by Task Scheduler.
 
 Options:
-  -Config FILE        Config file (default: %APPDATA%\AutoBackup\autobackup.conf,
+  -Config FILE        Config file (default: %APPDATA%\AutoBackup\autobackup.ini,
                       or $env:AUTOBACKUP_CONFIG)
   -Only JOB[,JOB]     Run only these jobs, even if not due.
                       The skip-if-unchanged check still applies.
@@ -230,27 +233,43 @@ function Invoke-Native([string]$exe, [string[]]$argList, [string]$key) {
 
 # ---------------------------------------------------------------- config
 
-# Parses the INI file into $script:Cfg records {Sec, Key, Val}.
-# Keys before any [section] belong to "global". Keys are case-insensitive.
-function Import-Cfg([string]$file) {
-    $script:Cfg.Clear()
-    $sec = 'global'
+# Every key the config understands. Anything else gets a warning and is ignored.
+$script:Keys = @('drive_root', 'machine', 'state', 'staging', 'review_every', 'root', 'dest', 'include', 'exclude',
+    'gitignore', 'compress', 'level', 'every', 'per_subfolder', 'keep', 'keep_max_size', 'chunk_size', 'alert_after',
+    'skip_if_running', 'pre', 'enabled', 'preset')
+
+# Strips one pair of matching surrounding quotes: "x" or 'x' -> x.
+function Get-Unquoted([string]$v) {
+    if ($v -match '^"(.*)"$' -or $v -match "^'(.*)'$") { return $Matches[1] }
+    return $v
+}
+
+# Parses an INI file into $script:Cfg records {Sec, Key, Val}, appended to what's already there.
+# Keys before any [section] belong to "global". Keys are case-insensitive. $prefix goes in front
+# of every section name: presets.ini loads as "preset:NAME", so presets never look like jobs.
+function Import-Cfg([string]$file, [string]$prefix = '') {
+    $sec = $prefix + 'global'
+    $name = Split-Path -Leaf $file
     $n = 0
     foreach ($raw in [IO.File]::ReadAllLines($file)) {
         $n++
         $line = $raw.Trim()
         if ($line -eq '' -or $line.StartsWith('#') -or $line.StartsWith(';')) { continue }
         if ($line.StartsWith('[') -and $line.EndsWith(']')) {
-            $sec = $line.Substring(1, $line.Length - 2).Trim()
+            $sec = $prefix + $line.Substring(1, $line.Length - 2).Trim()
         } elseif ($line.Contains('=')) {
             $i = $line.IndexOf('=')
-            [void]$script:Cfg.Add([pscustomobject]@{
-                Sec = $sec
-                Key = $line.Substring(0, $i).Trim().ToLower()
-                Val = $line.Substring($i + 1).Trim()
-            })
+            $k = $line.Substring(0, $i).Trim().ToLower()
+            $v = $line.Substring($i + 1).Trim()
+            if ($script:Keys -notcontains $k) { Write-Log 'WARN' "$name line ${n}: unknown key '$k' ignored"; continue }
+            # pre is a shell command: its quotes and # mean something there.
+            if ($k -ne 'pre') {
+                $v = Get-Unquoted $v
+                if ($v -match '\s[#;]') { Write-Log 'WARN' "$name line ${n}: '$v' is used as-is; comments only work on their own line" }
+            }
+            [void]$script:Cfg.Add([pscustomobject]@{ Sec = $sec; Key = $k; Val = $v })
         } else {
-            Write-Log 'WARN' "config line $n ignored: $line"
+            Write-Log 'WARN' "$name line $n ignored: $line"
         }
     }
 }
@@ -260,23 +279,70 @@ function Get-CfgVals([string]$sec, [string]$key) {
     foreach ($r in $script:Cfg) { if ($r.Sec -ceq $sec -and $r.Key -eq $key) { $r.Val } }
 }
 
-# Last value of key in section, else in [global], else the default.
+# Comma-separated items -> trimmed, non-empty items. Always wrap calls in @().
+function Get-ListItems([string[]]$lists) {
+    foreach ($l in $lists) { foreach ($p in ("$l" -split ',')) { if ($p.Trim()) { $p.Trim() } } }
+}
+
+# The presets a job uses, in the order listed. Always wrap calls in @().
+function Get-JobPresets([string]$job) { Get-ListItems @(Get-CfgVals $job 'preset') }
+
+# The last value any of the given presets sets for key, or ''.
+function Get-PresetsLast([string[]]$presets, [string]$key) {
+    $out = ''
+    foreach ($p in $presets) {
+        $v = @(Get-CfgVals "preset:$p" $key)
+        if ($v.Count -gt 0 -and $v[-1]) { $out = $v[-1] }
+    }
+    return $out
+}
+
+# Last value of key in the section; else from the job's presets (the last one listed wins);
+# else from [global]; else the default.
 function Get-Cfg([string]$sec, [string]$key, [string]$def = '') {
     $v = @(Get-CfgVals $sec $key)
-    if ($v.Count -eq 0) { $v = @(Get-CfgVals 'global' $key) }
-    if ($v.Count -gt 0) { return $v[-1] }
+    if ($v.Count -gt 0 -and $v[-1]) { return $v[-1] }
+    if ($sec -ne 'global') {
+        $pv = Get-PresetsLast @(Get-JobPresets $sec) $key
+        if ($pv) { return $pv }
+    }
+    $v = @(Get-CfgVals 'global' $key)
+    if ($v.Count -gt 0 -and $v[-1]) { return $v[-1] }
     return $def
+}
+
+# All values of a list key (include, exclude) for a job: its presets' first, then its own.
+function Get-JobVals([string]$job, [string]$key) {
+    foreach ($p in @(Get-JobPresets $job)) { Get-CfgVals "preset:$p" $key }
+    Get-CfgVals $job $key
 }
 
 function Get-CfgJobs {
     $seen = New-Object System.Collections.ArrayList
     foreach ($r in $script:Cfg) {
-        if ($r.Sec -ne 'global' -and -not $seen.Contains($r.Sec)) { [void]$seen.Add($r.Sec) }
+        if ($r.Sec -ne 'global' -and -not $r.Sec.StartsWith('preset:') -and -not $seen.Contains($r.Sec)) { [void]$seen.Add($r.Sec) }
     }
     return , $seen.ToArray()
 }
 
-# Creates the config from templates\windows.conf if it doesn't exist yet.
+function Get-PresetNames {
+    $seen = New-Object System.Collections.ArrayList
+    foreach ($r in $script:Cfg) {
+        if ($r.Sec.StartsWith('preset:') -and $r.Sec -ne 'preset:global') {
+            $p = $r.Sec.Substring(7)
+            if (-not $seen.Contains($p)) { [void]$seen.Add($p) }
+        }
+    }
+    return , $seen.ToArray()
+}
+
+# The given names that presets.ini doesn't define. Always wrap calls in @().
+function Get-UnknownPresets([string[]]$names) {
+    $known = Get-PresetNames
+    foreach ($p in $names) { if ($known -notcontains $p) { $p } }
+}
+
+# Creates the config from templates\windows.ini if it doesn't exist yet.
 function New-CfgFromTemplate {
     if (Test-Path -LiteralPath $script:CfgPath -PathType Leaf) { return $true }
     if (-not (Test-Path -LiteralPath $script:Template -PathType Leaf)) {
@@ -724,6 +790,11 @@ function Invoke-CopyFiles([string]$key, [string]$root, [string]$destdir) {
 
 function Invoke-Job([string]$job) {
     if (-not (Test-True (Get-Cfg $job 'enabled' 'true'))) { Write-VLog "[$job] disabled"; return $true }
+    $bad = @(Get-UnknownPresets @(Get-JobPresets $job))
+    if ($bad.Count -gt 0) {
+        Write-Log 'ERROR' "[$job] unknown preset: $($bad -join ', ') (known: $((Get-PresetNames) -join ', '))"
+        return $false
+    }
     $rootRaw = Get-Cfg $job 'root'
     $dest = (Get-Cfg $job 'dest').Trim('/', '\')
     if (-not $rootRaw -or -not $dest) { Write-Log 'ERROR' "[$job] needs both root and dest"; return $false }
@@ -783,7 +854,7 @@ function Invoke-Job([string]$job) {
         return $false
     }
 
-    $script:UExc = @(Get-CfgVals 'global' 'exclude') + @(Get-CfgVals $job 'exclude')
+    $script:UExc = @(Get-CfgVals 'global' 'exclude') + @(Get-JobVals $job 'exclude')
     $ok = $true
 
     if ($method -eq 'copy') {
@@ -802,7 +873,7 @@ function Invoke-Job([string]$job) {
         }
         if (-not $found) { Write-Log 'WARN' "[$job] per_subfolder = true but no subfolders in $root" }
     } else {
-        $script:UInc = @(Get-CfgVals $job 'include')
+        $script:UInc = @(Get-JobVals $job 'include')
         if ($script:UInc.Count -eq 0) { $script:UInc = @('.') }
         if (-not (Invoke-ArchiveUnit $job $job $root)) { $ok = $false }
     }
@@ -869,50 +940,130 @@ function Show-List {
     Show-SameVolumeWarning
 }
 
+# Presets that cover folder $path or something inside it, and exist on this machine. Only presets
+# rooted at ~ match, by their include paths. Always wrap calls in @().
+function Get-PresetsFor([string]$path) {
+    $full = Expand-Path $path
+    $home_ = ConvertTo-NativePath $HOME
+    if (-not $full.StartsWith($home_ + $script:Sep, [StringComparison]::OrdinalIgnoreCase)) { return }
+    $rel = $full.Substring($home_.Length + 1).Replace('\', '/')
+    foreach ($p in (Get-PresetNames)) {
+        if ((Get-PresetsLast @($p) 'root') -ne '~') { continue }
+        foreach ($i in @(Get-CfgVals "preset:$p" 'include')) {
+            if ($i -ne $rel -and -not $i.StartsWith("$rel/", [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if (Test-Path -LiteralPath (Join-Path $HOME (ConvertTo-NativePath $i))) { $p; break }
+        }
+    }
+}
+
+function Test-AddName([string]$name) {
+    if ($name -notmatch '^[A-Za-z0-9._-]+$') { [Console]::Error.WriteLine("Invalid job name: '$name'"); return $false }
+    if ((Get-CfgJobs) -contains $name) { [Console]::Error.WriteLine("Job [$name] already exists in $script:CfgPath. Edit it there (-Edit)."); return $false }
+    return $true
+}
+
+# The default an interactive -Add prompt shows: from the chosen presets, else [global].
+function Get-AddDefault([string[]]$presets, [string]$key, [string]$def = '') {
+    $v = Get-PresetsLast $presets $key
+    if ($v) { return $v }
+    return (Get-Cfg 'global' $key $def)
+}
+
 function Add-Job([string[]]$argv) {
     $argv = @($argv | Where-Object { $_ })
     $name = ''
     $pairs = @()
     if ($argv.Count -gt 0) { $name = $argv[0]; if ($argv.Count -gt 1) { $pairs = $argv[1..($argv.Count - 1)] } }
-    if (-not $name) { $name = Read-Host 'Job name (letters, digits, . _ -)' }
-    if ($name -notmatch '^[A-Za-z0-9._-]+$') { [Console]::Error.WriteLine("Invalid job name: '$name'"); return $false }
-    if ((Get-CfgJobs) -contains $name) { [Console]::Error.WriteLine("Job [$name] already exists in $script:CfgPath. Edit it there (-Edit)."); return $false }
-    $lines = @("[$name]")
-    $haveRoot = $false; $haveDest = $false
+    if ($name -and -not (Test-AddName $name)) { return $false }
+    $root = ''; $dest = ''; $presets = @()
+    $lines = @()
     foreach ($p in $pairs) {
         if ($p -notmatch '^[A-Za-z_]+=') { [Console]::Error.WriteLine("Expected key=value, got: $p"); return $false }
         $i = $p.IndexOf('=')
         $k = $p.Substring(0, $i); $v = $p.Substring($i + 1)
-        $lines += "$k = $v"
-        if ($k -eq 'root') { $haveRoot = $true }
-        if ($k -eq 'dest') { $haveDest = $true }
+        switch ($k) {
+            'root' { $root = $v }
+            'dest' { $dest = $v }
+            'preset' { $presets = @(Get-ListItems @($v)) }
+            default { $lines += "$k = $v" }
+        }
     }
-    if (-not $haveRoot) {
-        $v = Read-Host 'Source folder (root)'
-        if (-not $v) { return $false }
-        $lines += "root = $v"
+    $bad = @(Get-UnknownPresets $presets)
+    if ($bad.Count -gt 0) {
+        [Console]::Error.WriteLine("Unknown preset: $($bad -join ', ') (known: $((Get-PresetNames) -join ', '))")
+        return $false
     }
-    if (-not $haveDest) {
-        $v = Read-Host 'Drive subfolder under the drive root (e.g. Games/Minecraft)'
-        if (-not $v) { return $false }
-        $lines += "dest = $v"
+
+    if (-not $root -and ($pairs.Count -eq 0 -or -not (Get-AddDefault $presets 'root'))) {
+        $root = Read-Host 'Source folder (root)'
+        if (-not $root) { return $false }
     }
+
     if ($pairs.Count -eq 0) {
-        Say 'Paths inside root to include, one per line. Blank line = done (none = whole root).'
-        while ($true) { $v = Read-Host '  include'; if (-not $v) { break }; $lines += "include = $v" }
+        $sugg = @(Get-PresetsFor $root) -join ', '
+        while ($true) {
+            if ($sugg) {
+                $v = Read-Host "Presets for this folder ('none' to skip) [$sugg]"
+                if (-not $v) { $v = $sugg }
+            } else {
+                $v = Read-Host "Presets, comma-separated (blank for none; known: $((Get-PresetNames) -join ', '))"
+            }
+            if ($v -eq 'none') { $v = '' }
+            $presets = @(Get-ListItems @($v))
+            $bad = @(Get-UnknownPresets $presets)
+            if ($bad.Count -eq 0) { break }
+            [Console]::Error.WriteLine("Unknown preset: $($bad -join ', ')")
+        }
+        # A preset's includes are paths inside ~, so its root applies instead of the folder typed.
+        $presetRoot = Get-PresetsLast $presets 'root'
+        if ($presetRoot) { Say "Root: $presetRoot (from the preset)"; $root = '' }
+    }
+
+    if (-not $name) {
+        $def = ''
+        if ($presets.Count -eq 1) { $def = $presets[0] }
+        elseif ($root) { $def = (Get-Sanitized (Split-Path -Leaf (Expand-Path $root))).ToLower() }
+        if ((Get-CfgJobs) -contains $def) { $def = '' }
+        $prompt = 'Job name (letters, digits, . _ -)'
+        if ($def) { $prompt += " [$def]" }
+        while ($true) {
+            $name = Read-Host $prompt
+            if (-not $name) { $name = $def }
+            if (Test-AddName $name) { break }
+        }
+    }
+
+    if (-not $dest) {
+        $dest = Read-Host 'Drive subfolder under the drive root (e.g. Games/Minecraft)'
+        if (-not $dest) { return $false }
+    }
+
+    if ($pairs.Count -eq 0) {
+        if (-not (Get-AddDefault $presets 'include')) {
+            Say 'Paths inside root to include, one per line. Blank line = done (none = whole root).'
+            while ($true) { $v = Read-Host '  include'; if (-not $v) { break }; $lines += "include = $v" }
+        }
         Say 'Exclude patterns (e.g. node_modules, *.log, sub/dir). Blank line = done.'
         while ($true) { $v = Read-Host '  exclude'; if (-not $v) { break }; $lines += "exclude = $v" }
-        $v = Read-Host "Compression: zstd, gzip, none or copy [default $(Get-Cfg 'global' 'compress' 'zstd')]"
+        $v = Read-Host "Compression: zstd, gzip, none or copy [default $(Get-AddDefault $presets 'compress' 'zstd')]"
         if ($v) { $lines += "compress = $v" }
-        $v = Read-Host "How often, e.g. 12h, 1d, 7d [default $(Get-Cfg 'global' 'every' '1d')]"
+        $v = Read-Host "How often, e.g. 12h, 1d, 7d [default $(Get-AddDefault $presets 'every' '1d')]"
         if ($v) { $lines += "every = $v" }
-        $v = Read-Host 'One archive per subfolder of root? [y/N]'
-        if (Test-True $v) { $lines += 'per_subfolder = true' }
+        if (-not (Get-AddDefault $presets 'per_subfolder')) {
+            $v = Read-Host 'One archive per subfolder of root? [y/N]'
+            if (Test-True $v) { $lines += 'per_subfolder = true' }
+        }
     }
+
+    $out = @("[$name]")
+    if ($presets.Count -gt 0) { $out += "preset = $($presets -join ', ')" }
+    if ($root) { $out += "root = $root" }
+    $out += "dest = $dest"
+    $out += $lines
     $nl = "`r`n"
-    [IO.File]::AppendAllText($script:CfgPath, $nl + ($lines -join $nl) + $nl, $script:Utf8)
+    [IO.File]::AppendAllText($script:CfgPath, $nl + ($out -join $nl) + $nl, $script:Utf8)
     Say "Added to ${script:CfgPath}:"
-    foreach ($l in $lines) { Say "  $l" }
+    foreach ($l in $out) { Say "  $l" }
     Say "Test it: .\AutoBackup.ps1 -Only $name -DryRun -Verbose"
     return $true
 }
@@ -986,6 +1137,7 @@ if (-not (Test-Path -LiteralPath $script:CfgPath -PathType Leaf)) {
     exit 1
 }
 
+if (Test-Path -LiteralPath $script:Presets -PathType Leaf) { Import-Cfg $script:Presets 'preset:' }
 Import-Cfg $script:CfgPath
 $script:Machine = Get-Cfg 'global' 'machine'
 $driveRaw = Get-Cfg 'global' 'drive_root'
