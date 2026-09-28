@@ -14,12 +14,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: shellcheck
-        run: shellcheck autobackup.sh hooks/inventory.sh
+        run: shellcheck autobackup.sh restore.sh hooks/inventory.sh
       - name: PSScriptAnalyzer
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
           $r = @(Invoke-ScriptAnalyzer -Path AutoBackup.ps1 -Settings ./PSScriptAnalyzerSettings.psd1) +
+               @(Invoke-ScriptAnalyzer -Path Restore.ps1 -Settings ./PSScriptAnalyzerSettings.psd1) +
                @(Invoke-ScriptAnalyzer -Path hooks -Recurse -Settings ./PSScriptAnalyzerSettings.psd1)
           $r | Format-Table RuleName, ScriptName, Line, Message -Wrap
           if ($r.Count) { exit 1 }
