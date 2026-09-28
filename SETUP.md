@@ -45,14 +45,19 @@ ls ~/Library/CloudStorage      # helps find your sync folder's name
 
 A LaunchAgent (not a LaunchDaemon) runs as you, only while you're logged in. That's correct here: your home folder and the sync folder are only reachable in your session. macOS shows a "Background item added" notice, and the agent appears under System Settings > General > Login Items & Extensions.
 
-Check on it:
+Check on it (bash or zsh):
 
-```sh
-launchctl print gui/(id -u)/local.autobackup | grep -E 'state|last exit code'
+```bash
+launchctl print gui/$(id -u)/local.autobackup | grep -E 'state|last exit code'
 tail ~/.local/state/autobackup/autobackup.log ~/.local/state/autobackup/launchd.log
 ```
 
-(That's fish syntax; in bash or zsh, use `$(id -u)`.)
+Or in fish:
+
+```fish
+launchctl print gui/(id -u)/local.autobackup | grep -E 'state|last exit code'
+tail ~/.local/state/autobackup/autobackup.log ~/.local/state/autobackup/launchd.log
+```
 
 Editing the scripts or the config needs no reinstall. Moving the repo folder does: run `--install` again from the new location. `--uninstall` removes the agent.
 

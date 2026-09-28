@@ -153,6 +153,23 @@ Describe '<Impl>' -ForEach $impls {
         $entries | Should -Not -Contain 'proj/.env'
     }
 
+    It 'keeps non-ASCII file names inside git repos' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        # cafe with an accent (in the Windows ANSI code page 1252) and two CJK characters (not in it).
+        $names = @(('caf' + [char]0xE9 + '.txt'), ([string][char]0x65E5 + [char]0x672C + '.txt')) | Sort-Object
+        $proj = Join-Path $src 'proj'
+        foreach ($n in $names) { New-File (Join-Path $proj $n) }
+        & git -C $proj init -q
+        & git -C $proj add -A
+        & git -C $proj -c user.name=t -c user.email=t@t commit -qm init
+        Set-Jobs "[code]`nroot = $src`ndest = Code`ncompress = none`n"
+
+        (Invoke-AB '--force').Code | Should -Be 0
+        $x = Join-Path $root 'extracted'
+        New-Item -ItemType Directory -Path $x | Out-Null
+        & $tarExe -xf (Join-Path $drive 'Code/code_T.tar') -C $x
+        @(Get-ChildItem -LiteralPath (Join-Path $x 'proj') -File | ForEach-Object Name | Sort-Object) | Should -Be $names
+    }
+
     It 'keeps only the newest versions with keep' {
         New-File (Join-Path $src 'a.txt')
         Set-Jobs "[notes]`nroot = $src`ndest = Notes`ncompress = none`nkeep = 2`n"
@@ -262,5 +279,28 @@ Describe '<Impl>' -ForEach $impls {
         $text = [IO.File]::ReadAllText($conf)
         $text | Should -Match '\[mytool\]\r?\npreset = tool\r?\ndest = Tools'
         $text | Should -Not -Match '(?m)^root = '
+    }
+}
+
+# The app-inventory hooks call real package tools, so this checks the files the platform always has.
+Describe 'inventory hook' {
+    BeforeAll {
+        $repo = Split-Path -Parent $PSScriptRoot
+        $psExe = (Get-Process -Id $PID).Path
+    }
+
+    It 'writes the app lists for this platform' {
+        $out = Join-Path $TestDrive 'inventory'
+        if ([IO.Path]::DirectorySeparatorChar -eq '\') {
+            & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'hooks/Inventory.ps1') $out
+            $expected = 'installed.csv'
+        } else {
+            & sh (Join-Path $repo 'hooks/inventory.sh') $out
+            if ($IsMacOS) { $expected = 'Applications.tsv' } else { $expected = 'apt-manual.txt' }
+        }
+        $LASTEXITCODE | Should -Be 0
+        $file = Join-Path $out $expected
+        Test-Path -LiteralPath $file | Should -BeTrue
+        @(Get-Content -LiteralPath $file).Count | Should -BeGreaterThan 1
     }
 }

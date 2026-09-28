@@ -183,11 +183,12 @@ Path expansion applies to `root`, `drive_root`, `state`, `staging`, and `pre`:
 
 **`copy` mode** doesn't archive. It copies each non-hidden file directly inside `root` (not recursive) to `dest`, renamed with the machine suffix, and only when its content changed. This keeps inventories readable in the sync service's web UI and on a phone.
 
-**Exclude patterns** are passed to tar's `--exclude`. The scripts use bsdtar (libarchive) on all platforms when available: macOS `/usr/bin/tar`, Windows `tar.exe`, and `bsdtar` on Linux (package `libarchive-tools`). GNU tar follows the same rules for these patterns. Checked against bsdtar 3.5–3.7:
+**Exclude patterns** are passed to tar's `--exclude`. The scripts use bsdtar (libarchive) on all platforms when available: macOS `/usr/bin/tar`, Windows `tar.exe`, and `bsdtar` on Linux (package `libarchive-tools`). GNU tar follows the same rules for these patterns. Checked against bsdtar 3.5–3.8:
 
 - **A pattern matches a path, or the end of one, at any depth.** `node_modules` and `*.sqlite` match that name anywhere. `.obsidian/workspace.json` matches that file under any folder, including the top.
 - **`*` also matches `/`**: `*minecraft/logs` matches both `minecraft/logs` and `.minecraft/logs`.
 - **There's no way to anchor a pattern to the root.** Use a more specific path if a short name would catch too much.
+- **Patterns are case-sensitive**, on Windows too: `*.log` doesn't match `Debug.LOG`.
 - **Slashes:** always write `/`. The PowerShell script converts `\` for you.
 
 **`.gitignore` handling.** When a unit contains git repos (or sits inside one), the script builds tar's file list itself:
@@ -232,6 +233,30 @@ dest = Config
 
 The comments in `presets.ini` say what each one leaves out and why. To add a preset, add a section there.
 
+## Secrets and encryption
+
+AutoBackup doesn't encrypt archives. That's what makes them openable with any archive tool, and it means anyone who can read the sync folder can read them. Who that is depends on the service:
+
+- **End-to-end encrypted:** Proton Drive, and iCloud Drive with Advanced Data Protection turned on. Only your devices hold the keys.
+- **Encrypted, but the provider holds the keys:** Dropbox, Google Drive, OneDrive, and iCloud Drive with standard data protection. The provider, and anyone who gets into your account, can open the archives.
+
+**Where secrets hide in a backup**
+
+- Tool config folders can hold tokens in plain text. The templates back up `~/.config`, so check it. For example, `gh` keeps its token in the system keychain when one is available, but otherwise writes it to `~/.config/gh/hosts.yml`, which is common on Linux without a keyring.
+- `.ssh/config` in the templates holds host settings only. Private keys (`~/.ssh/id_*`) aren't included.
+- The presets leave out the credential files they know about: Codex `auth.json`, and Helium cookies and saved passwords. Prism's `accounts.json` sits outside `instances/`, so the Minecraft job never sees it.
+- Agent transcripts and shell history can contain anything that was pasted into them. The presets leave them out, and the templates don't include shell history.
+
+**Keeping secrets out**
+
+- For folders in `~`, list what to keep with `include` rather than archiving a whole folder and excluding what to drop.
+- Exclude single files by path: `exclude = gh/hosts.yml`.
+- List what an archive actually holds: `tar -tf dotfiles_MyMac.tar.zst`.
+
+**Encrypting with a service that isn't end-to-end encrypted**
+
+Put `drive_root` inside an encrypted folder that syncs as ciphertext, such as a Cryptomator vault in the sync folder. The vault is its own volume, so `staging` can't share it: each archive is copied into the vault rather than renamed, and `--list` shows a warning about that.
+
 ## Restoring
 
 Extract to a scratch folder first and copy back what you need. Extracting dotfiles straight into `~` overwrites live config.
@@ -258,9 +283,9 @@ To get an older snapshot, restore that version in the sync service first (its ve
 
 | | Status |
 |---|---|
-| **macOS** (tier 1) | The test suite passes in CI and locally with `/bin/bash` 3.2 and bsdtar, for both scripts. Not yet run for real: `--install`, notifications, and privacy permissions. |
-| **Windows** (tier 1) | The test suite passes in CI on Windows with the built-in `tar.exe`, under both Windows PowerShell 5.1 and PowerShell 7. Not yet run for real: `-Install` (Task Scheduler), toasts, and the inventory hook. |
-| **Linux** (tier 2) | The test suite passes in CI on Ubuntu with GNU tar. A Debian container run also covered bsdtar and the inventory hook. `--install` wrote systemd units that pass `systemd-analyze verify`, but the timer hasn't run under a real user session, and `notify-send` is untested. |
+| **macOS** (tier 1) | The test suite, including the inventory hook, passes in CI and locally with `/bin/bash` 3.2 and bsdtar, for both scripts. Not yet run for real: `--install`, notifications, and privacy permissions. |
+| **Windows** (tier 1) | The test suite, including the inventory hook, passes in CI on Windows Server 2025 with the built-in `tar.exe` (bsdtar 3.8, which has native zstd; older Windows builds may not, and the script falls back), under both Windows PowerShell 5.1 and PowerShell 7. Not yet run for real: `-Install` (Task Scheduler) and toasts. |
+| **Linux** (tier 2) | The test suite passes in CI on Ubuntu with GNU tar. Container runs also covered bsdtar (Debian) and the inventory hook (Debian, Fedora, Arch). `--install` wrote systemd units that pass `systemd-analyze verify`, but the timer hasn't run under a real user session, and `notify-send` is untested. |
 
 ## Working on this
 
@@ -308,10 +333,11 @@ For manual runs, point `--config` at a test config whose `drive_root`, `state` a
 
 ## Not done yet
 
-**Never run for real**
+**Not yet run for real.** The first real setup on each machine covers these:
 
-- Neither script has run against a real sync folder or from its scheduler.
-- `hooks/Inventory.ps1` has only been parse-checked. The Linux half of `hooks/inventory.sh` has only run on Debian (apt).
+- Neither script has run against a real sync folder or from its scheduler (LaunchAgent, systemd timer, Task Scheduler).
+- Notifications (Notification Center, `notify-send`, Windows toasts) and macOS privacy permissions.
+- The inventory hooks run in CI and in Fedora and Arch containers, but haven't yet listed a real desktop's winget, Store or Mac App Store apps.
 
 **To verify per sync service**
 
@@ -319,16 +345,9 @@ For manual runs, point `--config` at a test config whose `drive_root`, `state` a
 - Set version-history retention, and check quota after a few weeks.
 - Marking `AutoBackup/` as online-only (Dropbox, iCloud "Optimize Mac Storage", OneDrive Files On-Demand, Proton "Free up space") should stop archives from doubling local disk use. Unchanged checks only look at whether the file exists, so placeholders are fine. Worth confirming.
 
-**Windows-specific unknowns**
+**Windows limitation**
 
-- Whether exclude matching in Windows `tar.exe` is case-sensitive.
-- Whether this Windows build's `tar.exe` has native zstd. The script detects this and falls back either way.
-- Git-managed file lists are written in the ANSI code page for `tar.exe -T`. Paths that code page can't represent would make that archive fail, with an error in the log.
-
-**Deliberately not backed up (your call)**
-
-- Some secrets are inside included folders, e.g. `~/.config/gh/hosts.yml`. Whether that's acceptable depends on whether your sync service is end-to-end encrypted. Add excludes if you'd rather keep tokens out.
-- Prism's `accounts.json` (login tokens) is outside `instances/`, so the Minecraft job never picks it up.
+- Inside git repos, `tar.exe` reads the file list in the ANSI code page (1252 on English Windows). A name with characters outside it, such as Japanese on an English system, reaches tar with `?` in their place, and `tar.exe` treats `?` as a wildcard. The file is still archived, but so is any other file in that folder whose name fits the same pattern, even one git ignores, and a listed file can end up in the archive twice.
 
 **Missing features**
 
