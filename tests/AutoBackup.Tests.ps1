@@ -94,19 +94,19 @@ Describe '<Impl>' -ForEach $impls {
         $state = Join-Path $root 'state'
         $staging = Join-Path $root 'staging'
         $conf = Join-Path $root 'test.ini'
-        $presets = Join-Path $root 'presets.ini'
+        $rulegroups = Join-Path $root 'rulegroups.ini'
         New-Item -ItemType Directory -Force -Path $src, (Split-Path -Parent $drive) | Out-Null
     }
 
     AfterEach {
-        Remove-Item Env:AUTOBACKUP_PRESETS, Env:AUTOBACKUP_CONFIG -ErrorAction SilentlyContinue
+        Remove-Item Env:AUTOBACKUP_RULEGROUPS, Env:AUTOBACKUP_CONFIG -ErrorAction SilentlyContinue
     }
 
     It 'archives a folder, skips it when unchanged, and rebuilds after a change' {
         New-File (Join-Path $src 'a.txt')
         New-File (Join-Path $src 'sub/b.txt')
         New-File (Join-Path $src 'skip.log')
-        Set-Jobs "[plain]`nroot = $src`ndest = Plain`ncompress = none`nexclude = *.log`n"
+        Set-Jobs "[plain]`nsource = $src`ndest = Plain`ncompress = none`nexclude = *.log`n"
 
         (Invoke-AB '--force').Code | Should -Be 0
         $archive = Join-Path $drive 'Plain/plain_T.tar'
@@ -124,7 +124,7 @@ Describe '<Impl>' -ForEach $impls {
         New-File (Join-Path $src 'a.txt')
         New-File (Join-Path $src 'skip.log')
         New-File (Join-Path $src 'sub/cache/c.bin')
-        Set-Jobs "[plain]`nroot = $src`ndest = Plain`ncompress = none`nexclude = *.log`nexclude = sub/cache`n"
+        Set-Jobs "[plain]`nsource = $src`ndest = Plain`ncompress = none`nexclude = *.log`nexclude = sub/cache`n"
         (Invoke-AB '--force').Code | Should -Be 0
 
         foreach ($f in 'skip.log', 'sub/cache/c.bin') {
@@ -138,7 +138,7 @@ Describe '<Impl>' -ForEach $impls {
 
     It 'lists jobs, and a dry run writes nothing' {
         New-File (Join-Path $src 'a.txt')
-        Set-Jobs "[plain]`nroot = $src`ndest = Plain`n"
+        Set-Jobs "[plain]`nsource = $src`ndest = Plain`n"
 
         (Invoke-AB '--list').Text | Should -Match 'plain\s.*\sdue'
         $r = Invoke-AB '--dry-run'
@@ -151,7 +151,7 @@ Describe '<Impl>' -ForEach $impls {
         New-File (Join-Path $src 'One/a.txt')
         New-File (Join-Path $src 'Two/b.txt')
         New-File (Join-Path $src '.hidden/c.txt')
-        Set-Jobs "[games]`nroot = $src`ndest = Games`ncompress = none`nper_subfolder = true`n"
+        Set-Jobs "[games]`nsource = $src`ndest = Games`ncompress = none`nper_subfolder = true`n"
 
         (Invoke-AB '--force').Code | Should -Be 0
         Get-DriveFiles 'Games' | Should -Be @('One_T.tar', 'Two_T.tar')
@@ -161,7 +161,7 @@ Describe '<Impl>' -ForEach $impls {
     It 'copies top-level files with the machine suffix in copy mode' {
         New-File (Join-Path $src 'list.tsv') "a`tb"
         New-File (Join-Path $src '.hidden') 'no'
-        Set-Jobs "[inv]`nroot = $src`ndest = Config`ncompress = copy`n"
+        Set-Jobs "[inv]`nsource = $src`ndest = Config`ncompress = copy`n"
 
         (Invoke-AB '--force').Code | Should -Be 0
         Get-DriveFiles 'Config' | Should -Be @('list_T.tsv')
@@ -179,7 +179,7 @@ Describe '<Impl>' -ForEach $impls {
         & git -C $proj -c user.name=t -c user.email=t@t commit -qm init
         New-File (Join-Path $proj 'src/new.js')
         New-File (Join-Path $src 'notes.txt')
-        Set-Jobs "[code]`nroot = $src`ndest = Code`ncompress = none`n"
+        Set-Jobs "[code]`nsource = $src`ndest = Code`ncompress = none`n"
 
         (Invoke-AB '--force').Code | Should -Be 0
         $entries = Get-Entries (Join-Path $drive 'Code/code_T.tar')
@@ -199,7 +199,7 @@ Describe '<Impl>' -ForEach $impls {
         & git -C $proj init -q
         & git -C $proj add -A
         & git -C $proj -c user.name=t -c user.email=t@t commit -qm init
-        Set-Jobs "[code]`nroot = $src`ndest = Code`ncompress = none`n"
+        Set-Jobs "[code]`nsource = $src`ndest = Code`ncompress = none`n"
 
         (Invoke-AB '--force').Code | Should -Be 0
         $x = Join-Path $root 'extracted'
@@ -210,7 +210,7 @@ Describe '<Impl>' -ForEach $impls {
 
     It 'keeps only the newest versions with keep' {
         New-File (Join-Path $src 'a.txt')
-        Set-Jobs "[notes]`nroot = $src`ndest = Notes`ncompress = none`nkeep = 2`n"
+        Set-Jobs "[notes]`nsource = $src`ndest = Notes`ncompress = none`nkeep = 2`n"
 
         (Invoke-AB '--force').Code | Should -Be 0
         $first = @(Get-DriveFiles 'Notes')
@@ -229,7 +229,7 @@ Describe '<Impl>' -ForEach $impls {
         (New-Object Random 1).NextBytes($bytes)
         New-Item -ItemType Directory -Force -Path $src | Out-Null
         [IO.File]::WriteAllBytes((Join-Path $src 'big.bin'), $bytes)
-        Set-Jobs "[game]`nroot = $src`ndest = Games`ncompress = none`nchunk_size = 100K`n"
+        Set-Jobs "[game]`nsource = $src`ndest = Games`ncompress = none`nchunk_size = 100K`n"
 
         (Invoke-AB '--force').Code | Should -Be 0
         $parts = @(Get-DriveFiles 'Games')
@@ -248,17 +248,17 @@ Describe '<Impl>' -ForEach $impls {
         Get-DriveFiles 'Games' | Should -Be @('game_T.tar.001')
     }
 
-    It 'fails a job with a missing root and leaves it due' {
-        Set-Jobs "[gone]`nroot = $(Join-Path $root 'missing')`ndest = Gone`n"
+    It 'fails a job with a missing source and leaves it due' {
+        Set-Jobs "[gone]`nsource = $(Join-Path $root 'missing')`ndest = Gone`n"
 
         (Invoke-AB '--force').Code | Should -Not -Be 0
         Test-Path (Join-Path $state 'stamps/gone.checked') | Should -BeFalse
-        Get-Content (Join-Path $state 'autobackup.log') -Raw | Should -Match 'root folder not found'
+        Get-Content (Join-Path $state 'autobackup.log') -Raw | Should -Match 'source folder not found'
     }
 
     It 'warns about a job with no recent successful backup' {
         New-File (Join-Path $src 'a.txt')
-        Set-Jobs "[old]`nroot = $src`ndest = Old`ncompress = none`n[fresh]`nroot = $src`ndest = Fresh`ncompress = none`n"
+        Set-Jobs "[old]`nsource = $src`ndest = Old`ncompress = none`n[fresh]`nsource = $src`ndest = Fresh`ncompress = none`n"
 
         (Invoke-AB '--force').Code | Should -Be 0
         (Get-Item (Join-Path $state 'stamps/old.checked')).LastWriteTime = (Get-Date).AddDays(-10)
@@ -267,33 +267,33 @@ Describe '<Impl>' -ForEach $impls {
         (Invoke-AB '--list').Text | Should -Match 'old\s.*\sstale'
     }
 
-    It 'takes root, includes and settings from a preset, with job keys winning' {
+    It 'takes source, includes and settings from a rulegroup, with job keys winning' {
         New-File (Join-Path $src 'keep/a.txt')
         New-File (Join-Path $src 'keep/b.log')
         New-File (Join-Path $src 'keep/c.tmp')
         New-File (Join-Path $src 'other.txt')
-        [IO.File]::WriteAllText($presets, "[tool]`nroot = $src`ninclude = keep`nexclude = *.log`ncompress = gzip`nevery = 7d`n")
-        $env:AUTOBACKUP_PRESETS = $presets
-        Set-Jobs "[mytool]`npreset = tool`ndest = Tools`ncompress = none`nexclude = *.tmp`n"
+        [IO.File]::WriteAllText($rulegroups, "[tool]`nsource = $src`ninclude = keep`nexclude = *.log`ncompress = gzip`nevery = 7d`n")
+        $env:AUTOBACKUP_RULEGROUPS = $rulegroups
+        Set-Jobs "[mytool]`nrulegroup = tool`ndest = Tools`ncompress = none`nexclude = *.tmp`n"
 
         (Invoke-AB '--force').Code | Should -Be 0
         Get-Entries (Join-Path $drive 'Tools/mytool_T.tar') | Should -Be @('keep/a.txt')
         (Invoke-AB '--list').Text | Should -Match 'mytool\s+none\s+7d\s'
     }
 
-    It 'fails a job that names an unknown preset' {
+    It 'fails a job that names an unknown rulegroup' {
         New-File (Join-Path $src 'a.txt')
-        Set-Jobs "[typo]`npreset = no-such-preset`nroot = $src`ndest = Typo`n"
+        Set-Jobs "[typo]`nrulegroup = no-such-group`nsource = $src`ndest = Typo`n"
 
         $r = Invoke-AB '--force'
         $r.Code | Should -Not -Be 0
-        $r.Text | Should -Match 'unknown preset: no-such-preset'
+        $r.Text | Should -Match 'unknown rulegroup: no-such-group'
         Test-Path $drive | Should -BeFalse
     }
 
     It 'warns about unknown keys and trailing comments, and strips quotes' {
         New-File (Join-Path $src 'a.txt')
-        Set-Jobs "[plain]`nroot = `"$src`"`ndest = 'Plain'`nexlude = *.txt`nevery = 1d  # daily`n"
+        Set-Jobs "[plain]`nsource = `"$src`"`ndest = 'Plain'`nexlude = *.txt`nevery = 1d  # daily`n"
 
         $r = Invoke-AB '--dry-run'
         $r.Text | Should -Match "unknown key 'exlude' ignored"
@@ -301,27 +301,27 @@ Describe '<Impl>' -ForEach $impls {
         $r.Text | Should -Match 'would write .*Plain[\\/]plain_T\.tar'
     }
 
-    It 'loads the shipped presets.ini without warnings' {
+    It 'loads the shipped rulegroups.ini without warnings' {
         Set-Jobs ''
         $r = Invoke-AB '--list'
         $r.Code | Should -Be 0
         $r.Text | Should -Not -Match 'WARN'
     }
 
-    It 'adds a job that uses a preset without asking for its root' {
-        [IO.File]::WriteAllText($presets, "[tool]`nroot = $src`ninclude = keep`n")
-        $env:AUTOBACKUP_PRESETS = $presets
+    It 'adds a job that uses a rulegroup without asking for its source' {
+        [IO.File]::WriteAllText($rulegroups, "[tool]`nsource = $src`ninclude = keep`n")
+        $env:AUTOBACKUP_RULEGROUPS = $rulegroups
         Set-Jobs ''
 
-        (Invoke-AB '--add', 'mytool', 'preset=tool', 'dest=Tools').Code | Should -Be 0
+        (Invoke-AB '--add', 'mytool', 'rulegroup=tool', 'dest=Tools').Code | Should -Be 0
         $text = [IO.File]::ReadAllText($conf)
-        $text | Should -Match '\[mytool\]\r?\npreset = tool\r?\ndest = Tools'
-        $text | Should -Not -Match '(?m)^root = '
+        $text | Should -Match '\[mytool\]\r?\nrulegroup = tool\r?\ndest = Tools'
+        $text | Should -Not -Match '(?m)^source = '
     }
 
     It 'restores the newest version, or an older one with --at' {
         New-File (Join-Path $src 'a.txt') 'one'
-        Set-Jobs "[notes]`nroot = $src`ndest = Notes`ncompress = gzip`nkeep = 3`n"
+        Set-Jobs "[notes]`nsource = $src`ndest = Notes`ncompress = gzip`nkeep = 3`n"
         (Invoke-AB '--force').Code | Should -Be 0
         $first = (@(Get-DriveFiles 'Notes')[0]) -replace '^notes_T_(\d{4}-\d{2}-\d{2})_(\d{6}).*$', '$1_$2'
         Start-Sleep -Milliseconds 1100   # timestamps have 1-second resolution
@@ -350,7 +350,7 @@ Describe '<Impl>' -ForEach $impls {
         New-Item -ItemType Directory -Force -Path (Join-Path $src 'One'), (Join-Path $src 'Two') | Out-Null
         [IO.File]::WriteAllBytes((Join-Path $src 'One/big.bin'), $bytes)
         New-File (Join-Path $src 'Two/t.txt')
-        Set-Jobs "[games]`nroot = $src`ndest = Games`ncompress = gzip`nper_subfolder = true`nchunk_size = 100K`n"
+        Set-Jobs "[games]`nsource = $src`ndest = Games`ncompress = gzip`nper_subfolder = true`nchunk_size = 100K`n"
         (Invoke-AB '--force').Code | Should -Be 0
         @(Get-DriveFiles 'Games' | Where-Object { $_ -like 'One_T.tar.gz.*' }).Count | Should -BeGreaterThan 1
 
@@ -372,7 +372,7 @@ Describe '<Impl>' -ForEach $impls {
     It 'adds only missing files unless --overwrite, and refuses the drive folder' {
         New-File (Join-Path $src 'a.txt') 'new'
         New-File (Join-Path $src 'b.txt') 'new'
-        Set-Jobs "[plain]`nroot = $src`ndest = Plain`ncompress = none`n"
+        Set-Jobs "[plain]`nsource = $src`ndest = Plain`ncompress = none`n"
         (Invoke-AB '--force').Code | Should -Be 0
 
         $out = Join-Path $root 'out'
@@ -398,8 +398,8 @@ Describe '<Impl>' -ForEach $impls {
         New-File (Join-Path $src 'notes/a.txt')
         New-File (Join-Path $src 'games/One/b.txt')
         New-File (Join-Path $src 'games/Two/c.txt')
-        Set-Jobs ("[notes]`nroot = $(Join-Path $src 'notes')`ndest = Notes`ncompress = none`n" +
-            "[games]`nroot = $(Join-Path $src 'games')`ndest = Games`ncompress = none`nper_subfolder = true`n")
+        Set-Jobs ("[notes]`nsource = $(Join-Path $src 'notes')`ndest = Notes`ncompress = none`n" +
+            "[games]`nsource = $(Join-Path $src 'games')`ndest = Games`ncompress = none`nper_subfolder = true`n")
         (Invoke-AB '--force').Code | Should -Be 0
 
         (Invoke-Restore '--all', 'notes').Code | Should -Be 2
@@ -415,7 +415,7 @@ Describe '<Impl>' -ForEach $impls {
 
     It 'restores without a config, given the drive folder and machine' {
         New-File (Join-Path $src 'a.txt')
-        Set-Jobs "[plain]`nroot = $src`ndest = Plain`ncompress = none`n"
+        Set-Jobs "[plain]`nsource = $src`ndest = Plain`ncompress = none`n"
         (Invoke-AB '--force').Code | Should -Be 0
         Remove-Item -LiteralPath $conf
         $env:AUTOBACKUP_CONFIG = $conf   # so a real config in the default place isn't read

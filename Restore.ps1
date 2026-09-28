@@ -100,8 +100,8 @@ Options:
   -All                Restore the newest version of every archive for this machine, each into
                       its own folder
   -To DIR             Extract into DIR. Default: a new folder per archive under
-                      ~\autobackup-restore. Paths inside an archive are relative to its job's root,
-                      so -To ~ puts files from a job rooted at ~ back where they were.
+                      ~\autobackup-restore. Paths inside an archive are relative to its job's source,
+                      so -To ~ puts files from a job with source = ~ back where they were.
                       With -All, DIR holds one folder per archive instead.
   -Overwrite          Replace files that already exist with the archive's copy
   -At WHEN            Newest version from WHEN or earlier: 2026-09-27 or 2026-09-27_1305

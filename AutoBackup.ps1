@@ -16,7 +16,7 @@
 .EXAMPLE
   .\AutoBackup.ps1 -Only minecraft -DryRun -Verbose
 .EXAMPLE
-  .\AutoBackup.ps1 -Add notes root=~/Notes dest=Documents/Notes every=1d
+  .\AutoBackup.ps1 -Add notes source=~/Notes dest=Documents/Notes every=1d
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -70,9 +70,9 @@ if ($env:APPDATA) { $script:CfgPath = Join-Path $env:APPDATA 'AutoBackup\autobac
 else { $script:CfgPath = Join-Path $HOME '.config/autobackup/autobackup.ini' }
 if ($env:AUTOBACKUP_CONFIG) { $script:CfgPath = $env:AUTOBACKUP_CONFIG }
 $script:Template = Join-Path (Join-Path $script:Here 'templates') 'windows.ini'
-# Known folders and what to back up in them. AUTOBACKUP_PRESETS points elsewhere (the tests use it).
-$script:Presets = Join-Path $script:Here 'presets.ini'
-if ($env:AUTOBACKUP_PRESETS) { $script:Presets = $env:AUTOBACKUP_PRESETS }
+# Known folders and what to back up in them. AUTOBACKUP_RULEGROUPS points elsewhere (the tests use it).
+$script:Rulegroups = Join-Path $script:Here 'rulegroups.ini'
+if ($env:AUTOBACKUP_RULEGROUPS) { $script:Rulegroups = $env:AUTOBACKUP_RULEGROUPS }
 if ($env:AUTOBACKUP_TAR) {
     $script:Tar = $env:AUTOBACKUP_TAR
 } elseif ($script:IsWin) {
@@ -117,7 +117,7 @@ Examples:
   .\AutoBackup.ps1 -Only minecraft
   .\AutoBackup.ps1 -List
   .\AutoBackup.ps1 -Only dotfiles -DryRun -Verbose
-  .\AutoBackup.ps1 -Add notes root=~/Notes dest=Documents/Notes every=1d
+  .\AutoBackup.ps1 -Add notes source=~/Notes dest=Documents/Notes every=1d
 '@
 }
 
@@ -234,9 +234,9 @@ function Invoke-Native([string]$exe, [string[]]$argList, [string]$key) {
 # ---------------------------------------------------------------- config
 
 # Every key the config understands. Anything else gets a warning and is ignored.
-$script:Keys = @('drive_root', 'machine', 'state', 'staging', 'review_every', 'root', 'dest', 'include', 'exclude',
-    'gitignore', 'compress', 'level', 'every', 'per_subfolder', 'keep', 'keep_max_size', 'chunk_size', 'alert_after',
-    'skip_if_running', 'pre', 'enabled', 'preset')
+$script:Keys = @('drive_root', 'machine', 'state', 'staging', 'review_every', 'source', 'dest', 'include', 'exclude',
+    'gitignore', 'compress', 'compress_level', 'every', 'per_subfolder', 'keep', 'keep_max_size', 'chunk_size', 'alert_after',
+    'skip_if_running', 'pre', 'enabled', 'rulegroup')
 
 # Strips one pair of matching surrounding quotes: "x" or 'x' -> x.
 function Get-Unquoted([string]$v) {
@@ -246,7 +246,7 @@ function Get-Unquoted([string]$v) {
 
 # Parses an INI file into $script:Cfg records {Sec, Key, Val}, appended to what's already there.
 # Keys before any [section] belong to "global". Keys are case-insensitive. $prefix goes in front
-# of every section name: presets.ini loads as "preset:NAME", so presets never look like jobs.
+# of every section name: rulegroups.ini loads as "rulegroup:NAME", so rulegroups never look like jobs.
 function Import-Cfg([string]$file, [string]$prefix = '') {
     $sec = $prefix + 'global'
     $name = Split-Path -Leaf $file
@@ -284,26 +284,26 @@ function Get-ListItems([string[]]$lists) {
     foreach ($l in $lists) { foreach ($p in ("$l" -split ',')) { if ($p.Trim()) { $p.Trim() } } }
 }
 
-# The presets a job uses, in the order listed. Always wrap calls in @().
-function Get-JobPresets([string]$job) { Get-ListItems @(Get-CfgVals $job 'preset') }
+# The rulegroups a job uses, in the order listed. Always wrap calls in @().
+function Get-JobRulegroups([string]$job) { Get-ListItems @(Get-CfgVals $job 'rulegroup') }
 
-# The last value any of the given presets sets for key, or ''.
-function Get-PresetsLast([string[]]$presets, [string]$key) {
+# The last value any of the given rulegroups sets for key, or ''.
+function Get-RulegroupsLast([string[]]$rulegroups, [string]$key) {
     $out = ''
-    foreach ($p in $presets) {
-        $v = @(Get-CfgVals "preset:$p" $key)
+    foreach ($p in $rulegroups) {
+        $v = @(Get-CfgVals "rulegroup:$p" $key)
         if ($v.Count -gt 0 -and $v[-1]) { $out = $v[-1] }
     }
     return $out
 }
 
-# Last value of key in the section; else from the job's presets (the last one listed wins);
+# Last value of key in the section; else from the job's rulegroups (the last one listed wins);
 # else from [global]; else the default.
 function Get-Cfg([string]$sec, [string]$key, [string]$def = '') {
     $v = @(Get-CfgVals $sec $key)
     if ($v.Count -gt 0 -and $v[-1]) { return $v[-1] }
     if ($sec -ne 'global') {
-        $pv = Get-PresetsLast @(Get-JobPresets $sec) $key
+        $pv = Get-RulegroupsLast @(Get-JobRulegroups $sec) $key
         if ($pv) { return $pv }
     }
     $v = @(Get-CfgVals 'global' $key)
@@ -311,34 +311,34 @@ function Get-Cfg([string]$sec, [string]$key, [string]$def = '') {
     return $def
 }
 
-# All values of a list key (include, exclude) for a job: its presets' first, then its own.
+# All values of a list key (include, exclude) for a job: its rulegroups' first, then its own.
 function Get-JobVals([string]$job, [string]$key) {
-    foreach ($p in @(Get-JobPresets $job)) { Get-CfgVals "preset:$p" $key }
+    foreach ($p in @(Get-JobRulegroups $job)) { Get-CfgVals "rulegroup:$p" $key }
     Get-CfgVals $job $key
 }
 
 function Get-CfgJobs {
     $seen = New-Object System.Collections.ArrayList
     foreach ($r in $script:Cfg) {
-        if ($r.Sec -ne 'global' -and -not $r.Sec.StartsWith('preset:') -and -not $seen.Contains($r.Sec)) { [void]$seen.Add($r.Sec) }
+        if ($r.Sec -ne 'global' -and -not $r.Sec.StartsWith('rulegroup:') -and -not $seen.Contains($r.Sec)) { [void]$seen.Add($r.Sec) }
     }
     return , $seen.ToArray()
 }
 
-function Get-PresetNames {
+function Get-RulegroupNames {
     $seen = New-Object System.Collections.ArrayList
     foreach ($r in $script:Cfg) {
-        if ($r.Sec.StartsWith('preset:') -and $r.Sec -ne 'preset:global') {
-            $p = $r.Sec.Substring(7)
+        if ($r.Sec.StartsWith('rulegroup:') -and $r.Sec -ne 'rulegroup:global') {
+            $p = $r.Sec.Substring('rulegroup:'.Length)
             if (-not $seen.Contains($p)) { [void]$seen.Add($p) }
         }
     }
     return , $seen.ToArray()
 }
 
-# The given names that presets.ini doesn't define. Always wrap calls in @().
-function Get-UnknownPresets([string[]]$names) {
-    $known = Get-PresetNames
+# The given names that rulegroups.ini doesn't define. Always wrap calls in @().
+function Get-UnknownRulegroups([string[]]$names) {
+    $known = Get-RulegroupNames
     foreach ($p in $names) { if ($known -notcontains $p) { $p } }
 }
 
@@ -446,8 +446,8 @@ function Get-MethodExt([string]$method) {
 }
 
 # Two-step tar-then-zstd on purpose: piping tar into zstd on Windows can hang on large inputs.
-function Invoke-BuildArchive([string]$method, [string]$level, [string]$out, [string]$root, [string[]]$rest, [string]$key) {
-    $base = @('-c', '-C', $root)
+function Invoke-BuildArchive([string]$method, [string]$level, [string]$out, [string]$src, [string[]]$rest, [string]$key) {
+    $base = @('-c', '-C', $src)
     switch ($method) {
         'zstd-ext' {
             $raw = "$out.part.tar"
@@ -612,12 +612,12 @@ function Add-RepoEntries($list, [string]$full, [string]$rel, [string]$key) {
 
 # Writes the tar input list for a unit that contains git repos. Returns $false when there are
 # no repos, so the caller archives the includes normally. tar's own excludes still apply.
-function Write-FileList([string]$key, [string]$uroot, [string]$out, [string[]]$incs) {
+function Write-FileList([string]$key, [string]$usrc, [string]$out, [string[]]$incs) {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $false }
     $list = New-Object System.Collections.ArrayList
     $any = $false
     foreach ($i in $incs) {
-        $full = [IO.Path]::GetFullPath((Join-Path $uroot (ConvertTo-NativePath $i)))
+        $full = [IO.Path]::GetFullPath((Join-Path $usrc (ConvertTo-NativePath $i)))
         $item = Get-Item -LiteralPath $full -Force
         if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { [void]$list.Add($i); continue }
         $repos = @(Get-Repos $full)
@@ -656,9 +656,9 @@ function Find-Changed($item, [string]$rel, [datetime]$since) {
 
 # ---------------------------------------------------------------- jobs
 
-# Uses $script:UInc (paths relative to root), $script:UExc (tar patterns) and the per-job
+# Uses $script:UInc (paths relative to the source folder), $script:UExc (tar patterns) and the per-job
 # settings in $script:J. Returns $true on success.
-function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$uroot) {
+function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$usrc) {
     $J = $script:J
     $base = (Get-Sanitized $uname) + '_' + $script:Machine
     $ext = Get-MethodExt $J.Method
@@ -668,16 +668,16 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$uroot) {
     $incs = @()
     foreach ($i in $script:UInc) {
         $i = $i.Replace('\', '/')
-        if (Test-Path -LiteralPath (Join-Path $uroot (ConvertTo-NativePath $i))) { $incs += $i }
+        if (Test-Path -LiteralPath (Join-Path $usrc (ConvertTo-NativePath $i))) { $incs += $i }
         else { Write-VLog "[$key] include not found, skipped: $i" }
     }
     if ($incs.Count -eq 0) {
-        Write-Log 'WARN' "[$key] nothing to archive under $uroot"
+        Write-Log 'WARN' "[$key] nothing to archive under $usrc"
         return $true
     }
 
     # The descriptor records what produced the archive; editing the job forces a rebuild.
-    $desc = @("root=$uroot", "method=$($J.Method)", "level=$($J.Level)", "chunk=$($J.Chunk)", "gitignore=$($J.Git)")
+    $desc = @("source=$usrc", "method=$($J.Method)", "compress_level=$($J.Level)", "chunk=$($J.Chunk)", "gitignore=$($J.Git)")
     foreach ($i in $incs) { $desc += "include=$i" }
     foreach ($e in $script:UExc) { $desc += "exclude=$e" }
     $descText = $desc -join "`n"
@@ -689,7 +689,7 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$uroot) {
             $hit = $null
             # Git-ignored files still count, so this can rebuild needlessly but never miss a change.
             foreach ($i in $incs) {
-                $item = Get-Item -LiteralPath (Join-Path $uroot (ConvertTo-NativePath $i)) -Force
+                $item = Get-Item -LiteralPath (Join-Path $usrc (ConvertTo-NativePath $i)) -Force
                 $hit = Find-Changed $item $i $since
                 if ($hit) { break }
             }
@@ -706,7 +706,7 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$uroot) {
     $target = Join-Path $J.DestDir $fname
 
     if ($script:OptDry) {
-        Write-Log 'INFO' "[$key] would write $target ($($J.Method), from ${uroot}: $($incs -join ', '))"
+        Write-Log 'INFO' "[$key] would write $target ($($J.Method), from ${usrc}: $($incs -join ', '))"
         return $true
     }
 
@@ -722,7 +722,7 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$uroot) {
 
     $targs = @()
     foreach ($e in $script:UExc) { $targs += @('--exclude', $e.Replace('\', '/')) }
-    if ((Test-True $J.Git) -and (Write-FileList $key $uroot $listf $incs)) {
+    if ((Test-True $J.Git) -and (Write-FileList $key $usrc $listf $incs)) {
         Write-VLog "[$key] git repos found; using .gitignore rules"
         $targs += @('--no-recursion', '--null', '-T', $listf)
     } else {
@@ -731,11 +731,11 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$uroot) {
     }
 
     $t0 = [DateTime]::UtcNow
-    $ok = Invoke-BuildArchive $J.Method $J.Level $tmp $uroot $targs $key
+    $ok = Invoke-BuildArchive $J.Method $J.Level $tmp $usrc $targs $key
     Remove-Item -LiteralPath $listf -Force -ErrorAction SilentlyContinue
     if (-not $ok) {
         Remove-Item -LiteralPath $tmp, $pending -Force -ErrorAction SilentlyContinue
-        Write-Log 'ERROR' "[$key] archiving failed for $uroot"
+        Write-Log 'ERROR' "[$key] archiving failed for $usrc"
         return $false
     }
 
@@ -768,11 +768,11 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$uroot) {
     return $true
 }
 
-# copy mode: flat copy of the files directly inside root, renamed NAME_MACHINE.ext.
+# copy mode: flat copy of the files directly inside the source folder, renamed NAME_MACHINE.ext.
 # Only changed files are copied.
-function Invoke-CopyFiles([string]$key, [string]$root, [string]$destdir) {
+function Invoke-CopyFiles([string]$key, [string]$src, [string]$destdir) {
     $ok = $true
-    $files = Get-ChildItem -LiteralPath $root -File -Force | Where-Object { -not $_.Name.StartsWith('.') } | Sort-Object Name
+    $files = Get-ChildItem -LiteralPath $src -File -Force | Where-Object { -not $_.Name.StartsWith('.') } | Sort-Object Name
     foreach ($f in $files) {
         $skip = $false
         foreach ($e in $script:UExc) { if ($f.Name -like $e) { $skip = $true } }
@@ -803,19 +803,19 @@ function Invoke-CopyFiles([string]$key, [string]$root, [string]$destdir) {
 
 function Invoke-Job([string]$job) {
     if (-not (Test-True (Get-Cfg $job 'enabled' 'true'))) { Write-VLog "[$job] disabled"; return $true }
-    $bad = @(Get-UnknownPresets @(Get-JobPresets $job))
+    $bad = @(Get-UnknownRulegroups @(Get-JobRulegroups $job))
     if ($bad.Count -gt 0) {
-        Write-Log 'ERROR' "[$job] unknown preset: $($bad -join ', ') (known: $((Get-PresetNames) -join ', '))"
+        Write-Log 'ERROR' "[$job] unknown rulegroup: $($bad -join ', ') (known: $((Get-RulegroupNames) -join ', '))"
         return $false
     }
-    $rootRaw = Get-Cfg $job 'root'
+    $srcRaw = Get-Cfg $job 'source'
     $dest = (Get-Cfg $job 'dest').Trim('/', '\')
-    if (-not $rootRaw -or -not $dest) { Write-Log 'ERROR' "[$job] needs both root and dest"; return $false }
-    $root = Expand-Path $rootRaw
+    if (-not $srcRaw -or -not $dest) { Write-Log 'ERROR' "[$job] needs both source and dest"; return $false }
+    $src = Expand-Path $srcRaw
     $mode = (Get-Cfg $job 'compress' 'zstd').ToLower()
     $method = Resolve-Method $mode
     if (-not $method) { Write-Log 'ERROR' "[$job] unknown compress '$mode' (use zstd, gzip, none or copy)"; return $false }
-    $level = Get-Cfg $job 'level'
+    $level = Get-Cfg $job 'compress_level'
     if (-not $level) { if ($method -eq 'gzip') { $level = '6' } else { $level = '3' } }
     $keepRaw = Get-Cfg $job 'keep' '1'
     if ($keepRaw -notmatch '^\d+$' -or [int]$keepRaw -lt 1) { Write-Log 'ERROR' "[$job] keep must be a whole number, 1 or more"; return $false }
@@ -861,9 +861,9 @@ function Invoke-Job([string]$job) {
         }
     }
 
-    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
-        if ($script:OptDry -and $preCmd) { Write-Log 'INFO' "[$job] root $root does not exist yet (pre would create it)"; return $true }
-        Write-Log 'ERROR' "[$job] root folder not found: $root"
+    if (-not (Test-Path -LiteralPath $src -PathType Container)) {
+        if ($script:OptDry -and $preCmd) { Write-Log 'INFO' "[$job] source $src does not exist yet (pre would create it)"; return $true }
+        Write-Log 'ERROR' "[$job] source folder not found: $src"
         return $false
     }
 
@@ -871,11 +871,11 @@ function Invoke-Job([string]$job) {
     $ok = $true
 
     if ($method -eq 'copy') {
-        if (-not (Invoke-CopyFiles $job $root $script:J.DestDir)) { $ok = $false }
+        if (-not (Invoke-CopyFiles $job $src $script:J.DestDir)) { $ok = $false }
     } elseif (Test-True (Get-Cfg $job 'per_subfolder' 'false')) {
         # One archive per immediate subfolder (e.g. one per Prism instance).
         $found = $false
-        $subs = Get-ChildItem -LiteralPath $root -Directory -Force | Where-Object { -not $_.Name.StartsWith('.') } | Sort-Object Name
+        $subs = Get-ChildItem -LiteralPath $src -Directory -Force | Where-Object { -not $_.Name.StartsWith('.') } | Sort-Object Name
         foreach ($d in $subs) {
             $skip = $false
             foreach ($e in $script:UExc) { if ($d.Name -like $e) { $skip = $true } }
@@ -884,11 +884,11 @@ function Invoke-Job([string]$job) {
             $script:UInc = @('.')
             if (-not (Invoke-ArchiveUnit ("$job@" + (Get-Sanitized $d.Name)) $d.Name $d.FullName)) { $ok = $false }
         }
-        if (-not $found) { Write-Log 'WARN' "[$job] per_subfolder = true but no subfolders in $root" }
+        if (-not $found) { Write-Log 'WARN' "[$job] per_subfolder = true but no subfolders in $src" }
     } else {
         $script:UInc = @(Get-JobVals $job 'include')
         if ($script:UInc.Count -eq 0) { $script:UInc = @('.') }
-        if (-not (Invoke-ArchiveUnit $job $job $root)) { $ok = $false }
+        if (-not (Invoke-ArchiveUnit $job $job $src)) { $ok = $false }
     }
 
     if ($ok -and -not $script:OptDry) {
@@ -953,16 +953,16 @@ function Show-List {
     Show-SameVolumeWarning
 }
 
-# Presets that cover folder $path or something inside it, and exist on this machine. Only presets
-# rooted at ~ match, by their include paths. Always wrap calls in @().
-function Get-PresetsFor([string]$path) {
+# Rulegroups that cover folder $path or something inside it, and exist on this machine. Only
+# rulegroups with source = ~ match, by their include paths. Always wrap calls in @().
+function Get-RulegroupsFor([string]$path) {
     $full = Expand-Path $path
     $home_ = ConvertTo-NativePath $HOME
     if (-not $full.StartsWith($home_ + $script:Sep, [StringComparison]::OrdinalIgnoreCase)) { return }
     $rel = $full.Substring($home_.Length + 1).Replace('\', '/')
-    foreach ($p in (Get-PresetNames)) {
-        if ((Get-PresetsLast @($p) 'root') -ne '~') { continue }
-        foreach ($i in @(Get-CfgVals "preset:$p" 'include')) {
+    foreach ($p in (Get-RulegroupNames)) {
+        if ((Get-RulegroupsLast @($p) 'source') -ne '~') { continue }
+        foreach ($i in @(Get-CfgVals "rulegroup:$p" 'include')) {
             if ($i -ne $rel -and -not $i.StartsWith("$rel/", [StringComparison]::OrdinalIgnoreCase)) { continue }
             if (Test-Path -LiteralPath (Join-Path $HOME (ConvertTo-NativePath $i))) { $p; break }
         }
@@ -975,9 +975,9 @@ function Test-AddName([string]$name) {
     return $true
 }
 
-# The default an interactive -Add prompt shows: from the chosen presets, else [global].
-function Get-AddDefault([string[]]$presets, [string]$key, [string]$def = '') {
-    $v = Get-PresetsLast $presets $key
+# The default an interactive -Add prompt shows: from the chosen rulegroups, else [global].
+function Get-AddDefault([string[]]$rulegroups, [string]$key, [string]$def = '') {
+    $v = Get-RulegroupsLast $rulegroups $key
     if ($v) { return $v }
     return (Get-Cfg 'global' $key $def)
 }
@@ -988,54 +988,54 @@ function Add-Job([string[]]$argv) {
     $pairs = @()
     if ($argv.Count -gt 0) { $name = $argv[0]; if ($argv.Count -gt 1) { $pairs = $argv[1..($argv.Count - 1)] } }
     if ($name -and -not (Test-AddName $name)) { return $false }
-    $root = ''; $dest = ''; $presets = @()
+    $src = ''; $dest = ''; $rulegroups = @()
     $lines = @()
     foreach ($p in $pairs) {
         if ($p -notmatch '^[A-Za-z_]+=') { [Console]::Error.WriteLine("Expected key=value, got: $p"); return $false }
         $i = $p.IndexOf('=')
         $k = $p.Substring(0, $i); $v = $p.Substring($i + 1)
         switch ($k) {
-            'root' { $root = $v }
+            'source' { $src = $v }
             'dest' { $dest = $v }
-            'preset' { $presets = @(Get-ListItems @($v)) }
+            'rulegroup' { $rulegroups = @(Get-ListItems @($v)) }
             default { $lines += "$k = $v" }
         }
     }
-    $bad = @(Get-UnknownPresets $presets)
+    $bad = @(Get-UnknownRulegroups $rulegroups)
     if ($bad.Count -gt 0) {
-        [Console]::Error.WriteLine("Unknown preset: $($bad -join ', ') (known: $((Get-PresetNames) -join ', '))")
+        [Console]::Error.WriteLine("Unknown rulegroup: $($bad -join ', ') (known: $((Get-RulegroupNames) -join ', '))")
         return $false
     }
 
-    if (-not $root -and ($pairs.Count -eq 0 -or -not (Get-AddDefault $presets 'root'))) {
-        $root = Read-Host 'Source folder (root)'
-        if (-not $root) { return $false }
+    if (-not $src -and ($pairs.Count -eq 0 -or -not (Get-AddDefault $rulegroups 'source'))) {
+        $src = Read-Host 'Source folder'
+        if (-not $src) { return $false }
     }
 
     if ($pairs.Count -eq 0) {
-        $sugg = @(Get-PresetsFor $root) -join ', '
+        $sugg = @(Get-RulegroupsFor $src) -join ', '
         while ($true) {
             if ($sugg) {
-                $v = Read-Host "Presets for this folder ('none' to skip) [$sugg]"
+                $v = Read-Host "Rulegroups for this folder ('none' to skip) [$sugg]"
                 if (-not $v) { $v = $sugg }
             } else {
-                $v = Read-Host "Presets, comma-separated (blank for none; known: $((Get-PresetNames) -join ', '))"
+                $v = Read-Host "Rulegroups, comma-separated (blank for none; known: $((Get-RulegroupNames) -join ', '))"
             }
             if ($v -eq 'none') { $v = '' }
-            $presets = @(Get-ListItems @($v))
-            $bad = @(Get-UnknownPresets $presets)
+            $rulegroups = @(Get-ListItems @($v))
+            $bad = @(Get-UnknownRulegroups $rulegroups)
             if ($bad.Count -eq 0) { break }
-            [Console]::Error.WriteLine("Unknown preset: $($bad -join ', ')")
+            [Console]::Error.WriteLine("Unknown rulegroup: $($bad -join ', ')")
         }
-        # A preset's includes are paths inside ~, so its root applies instead of the folder typed.
-        $presetRoot = Get-PresetsLast $presets 'root'
-        if ($presetRoot) { Say "Root: $presetRoot (from the preset)"; $root = '' }
+        # A rulegroup's includes are paths inside ~, so its source applies instead of the folder typed.
+        $groupSource = Get-RulegroupsLast $rulegroups 'source'
+        if ($groupSource) { Say "Source: $groupSource (from the rulegroup)"; $src = '' }
     }
 
     if (-not $name) {
         $def = ''
-        if ($presets.Count -eq 1) { $def = $presets[0] }
-        elseif ($root) { $def = (Get-Sanitized (Split-Path -Leaf (Expand-Path $root))).ToLower() }
+        if ($rulegroups.Count -eq 1) { $def = $rulegroups[0].Split('.')[-1] }
+        elseif ($src) { $def = (Get-Sanitized (Split-Path -Leaf (Expand-Path $src))).ToLower() }
         if ((Get-CfgJobs) -contains $def) { $def = '' }
         $prompt = 'Job name (letters, digits, . _ -)'
         if ($def) { $prompt += " [$def]" }
@@ -1052,25 +1052,25 @@ function Add-Job([string[]]$argv) {
     }
 
     if ($pairs.Count -eq 0) {
-        if (-not (Get-AddDefault $presets 'include')) {
-            Say 'Paths inside root to include, one per line. Blank line = done (none = whole root).'
+        if (-not (Get-AddDefault $rulegroups 'include')) {
+            Say 'Paths inside the source folder to include, one per line. Blank line = done (none = all of it).'
             while ($true) { $v = Read-Host '  include'; if (-not $v) { break }; $lines += "include = $v" }
         }
         Say 'Exclude patterns (e.g. node_modules, *.log, sub/dir). Blank line = done.'
         while ($true) { $v = Read-Host '  exclude'; if (-not $v) { break }; $lines += "exclude = $v" }
-        $v = Read-Host "Compression: zstd, gzip, none or copy [default $(Get-AddDefault $presets 'compress' 'zstd')]"
+        $v = Read-Host "Compression: zstd, gzip, none or copy [default $(Get-AddDefault $rulegroups 'compress' 'zstd')]"
         if ($v) { $lines += "compress = $v" }
-        $v = Read-Host "How often, e.g. 12h, 1d, 7d [default $(Get-AddDefault $presets 'every' '1d')]"
+        $v = Read-Host "How often, e.g. 12h, 1d, 7d [default $(Get-AddDefault $rulegroups 'every' '1d')]"
         if ($v) { $lines += "every = $v" }
-        if (-not (Get-AddDefault $presets 'per_subfolder')) {
-            $v = Read-Host 'One archive per subfolder of root? [y/N]'
+        if (-not (Get-AddDefault $rulegroups 'per_subfolder')) {
+            $v = Read-Host 'One archive per subfolder of the source folder? [y/N]'
             if (Test-True $v) { $lines += 'per_subfolder = true' }
         }
     }
 
     $out = @("[$name]")
-    if ($presets.Count -gt 0) { $out += "preset = $($presets -join ', ')" }
-    if ($root) { $out += "root = $root" }
+    if ($rulegroups.Count -gt 0) { $out += "rulegroup = $($rulegroups -join ', ')" }
+    if ($src) { $out += "source = $src" }
     $out += "dest = $dest"
     $out += $lines
     $nl = "`r`n"
@@ -1150,7 +1150,7 @@ if (-not (Test-Path -LiteralPath $script:CfgPath -PathType Leaf)) {
     exit 1
 }
 
-if (Test-Path -LiteralPath $script:Presets -PathType Leaf) { Import-Cfg $script:Presets 'preset:' }
+if (Test-Path -LiteralPath $script:Rulegroups -PathType Leaf) { Import-Cfg $script:Rulegroups 'rulegroup:' }
 Import-Cfg $script:CfgPath
 $script:Machine = Get-Cfg 'global' 'machine'
 $driveRaw = Get-Cfg 'global' 'drive_root'

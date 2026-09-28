@@ -41,8 +41,8 @@ Setting `drive_root` and `machine` is the only required edit. [SETUP.md](SETUP.m
 |---|---|
 | `autobackup.sh` | macOS and Linux. bash 3.2+ (macOS `/bin/bash`). |
 | `AutoBackup.ps1` | Windows. Windows PowerShell 5.1 and PowerShell 7. ASCII-only. |
-| `templates/macos.ini`, `linux.ini`, `windows.ini` | Starting job lists. `--edit` / `-Edit` copies the right one into place. |
-| `presets.ini` | Known folders (coding agents, Obsidian, some apps and games) and what to keep in them. See [Presets](#presets). |
+| `templates/macos.ini`, `linux.ini`, `windows.ini` | Starting configs: app inventory and dotfiles jobs, plus commented-out examples. `--edit` / `-Edit` copies the right one into place. |
+| `rulegroups.ini` | Example rules for known folders (coding agents, notes, some apps and games), for jobs to reuse. See [Rulegroups](#rulegroups). |
 | `restore.sh`, `Restore.ps1` | Optional. Find, verify and extract archives. See [Restoring](#restoring). |
 | `hooks/inventory.sh` | macOS/Linux app lists: `Applications.tsv`, `Brewfile`, `mas.txt`, apt/dnf/pacman/flatpak/snap lists, npm/pipx/uv/cargo globals. |
 | `hooks/Inventory.ps1` | Windows app lists: `winget.json`, `installed.csv` (Add or remove programs, from the registry), `store-apps.csv`, `scoop.json`. |
@@ -63,21 +63,21 @@ The templates' `dotfiles` job already includes the config folder, so your job li
 
 ## Drive layout
 
-With the templates' jobs enabled on a Mac named `MyMac` and a PC named `MyPC`:
+With the templates' jobs and examples enabled on a Mac named `MyMac` and a PC named `MyPC`:
 
 ```
 AutoBackup/
   Config/                 dotfiles_MyMac.tar.zst, dotfiles_MyPC.tar.zst,
                           Applications_MyMac.tsv, Brewfile_MyMac, installed_MyPC.csv, winget_MyPC.json, ...
-  Code/                   code_MyMac.tar.zst
-  Documents/Obsidian/     obsidian_MyMac.tar.zst
+  Projects/               projects_MyMac.tar.zst
+  Documents/Notes/        notes_MyMac_2026-09-27_130512.tar.zst, ... (keep = 10)
   Games/Minecraft/        <instance>_MyPC.tar.zst.001, .002, ... (one set per Prism instance)
 ```
 
 Naming is `<name>_<machine><ext>`:
 
 - `<name>` is the job name, or the subfolder name for `per_subfolder` jobs. Anything outside `A-Z a-z 0-9 . _ -` becomes `-`.
-- With `keep` above 1, a timestamp is added: `obsidian_MyMac_2026-09-27_130512.tar.zst`.
+- With `keep` above 1, a timestamp is added: `notes_MyMac_2026-09-27_130512.tar.zst`.
 - With `chunk_size`, the archive is stored as numbered parts: `.tar.zst.001`, `.002`, ...
 - In `copy` mode the machine suffix goes before the extension (`Brewfile_MyMac`, `installed_MyPC.csv`).
 
@@ -114,7 +114,7 @@ To force a job to be due again, delete its `.checked` stamp. To force a full reb
 | `-v`, `--verbose` | `-Verbose` | Also show not-due, unchanged, and missing-include details. |
 | `-o JOB`, `--only JOB[,JOB]` | `-Only JOB[,JOB]` | Run just these jobs, ignoring the schedule. The unchanged check still applies. |
 | `-f`, `--force` | `-Force` | Ignore the schedule and the unchanged check. |
-| `-a [JOB] [k=v ...]`, `--add` | `-Add [JOB] [k=v ...]` | Append a job to the config. Prompts interactively when no `k=v` pairs are given, and suggests [presets](#presets) for known folders. |
+| `-a [JOB] [k=v ...]`, `--add` | `-Add [JOB] [k=v ...]` | Append a job to the config. Prompts interactively when no `k=v` pairs are given, and suggests [rulegroups](#rulegroups) for known folders. |
 | `-e`, `--edit` | `-Edit` | Open the config in `$VISUAL`/`$EDITOR` (fallback: TextEdit, `xdg-open`, Notepad). Creates it from the template first. |
 | `--install` | `-Install` | Schedule hourly + login runs (LaunchAgent, systemd user timer, or Task Scheduler). |
 | `--uninstall` | `-Uninstall` | Remove the schedule. Config, state and archives stay. |
@@ -123,13 +123,13 @@ To force a job to be due again, delete its `.checked` stamp. To force a full reb
 Examples:
 
 ```sh
-./autobackup.sh --add screenshots root=~/Pictures/Screenshots dest=Pictures every=7d compress=none
-./autobackup.sh --add codex preset=codex dest=Config
+./autobackup.sh --add screenshots source=~/Pictures/Screenshots dest=Pictures every=7d compress=none
+./autobackup.sh --add codex rulegroup=ai.codex dest=Config
 ./autobackup.sh --only screenshots --dry-run -v
 ```
 
 ```powershell
-.\AutoBackup.ps1 -Add saves root='%USERPROFILE%\Saved Games' dest=Games/Saves every=7d
+.\AutoBackup.ps1 -Add saves source='%USERPROFILE%\Saved Games' dest=Games/Saves every=7d
 .\AutoBackup.ps1 -Only minecraft -DryRun -Verbose
 ```
 
@@ -140,12 +140,12 @@ The config is an INI file: a `[global]` section, then one `[job]` section per ba
 - `#` and `;` start a comment only at the beginning of a line. A value containing ` #` is used as-is, with a warning.
 - Keys are case-insensitive. Unknown keys (typos like `exlude`) are ignored with a warning.
 - Values are taken literally. Quotes are optional: one pair around the whole value is removed, except in `pre`, which is passed to the shell unchanged.
-- `include`, `exclude` and `preset` can repeat. Every other key uses its last value.
+- `include`, `exclude` and `rulegroup` can repeat. Every other key uses its last value.
 - Any job key set in `[global]` becomes the default for all jobs.
 - `exclude` lines in `[global]` are added to each job's own excludes.
 - Durations: `30m`, `12h`, `1d`, `2w` (a bare number means hours). Sizes: `500M`, `4G`, `1T`.
 
-Path expansion applies to `root`, `drive_root`, `state`, `staging`, and `pre`:
+Path expansion applies to `source`, `drive_root`, `state`, `staging`, and `pre`:
 
 - A leading `~` becomes your home folder.
 - `{here}` becomes the script's folder, and `{machine}` the machine name.
@@ -164,31 +164,31 @@ Path expansion applies to `root`, `drive_root`, `state`, `staging`, and `pre`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `root` | *(required)* | Folder the archive is built from. Paths inside the archive are relative to this. |
+| `source` | *(required)* | Folder the archive is built from. Paths inside the archive are relative to this. |
 | `dest` | *(required)* | Subfolder of `drive_root`, e.g. `Games/Minecraft`. |
-| `include` | `.` (all of root) | Path inside `root` to archive. Repeatable. Missing paths are skipped (shown with `-v`). |
+| `include` | `.` (all of `source`) | Path inside `source` to archive. Repeatable. Missing paths are skipped (shown with `-v`). |
 | `exclude` | *(none)* | tar exclude pattern. Repeatable. Rules below. |
 | `gitignore` | `true` | Inside git repos, archive only what git doesn't ignore. Details below. |
 | `compress` | `zstd` | `zstd`, `gzip`, `none` (plain `.tar`), or `copy` (see below). |
-| `level` | 3 (zstd), 6 (gzip) | Compression level. Use 1 for already-compressed data like game files. |
+| `compress_level` | 3 (zstd), 6 (gzip) | Compression level. Use 1 for already-compressed data like game files. |
 | `every` | `1d` | Minimum time between passes. |
-| `per_subfolder` | `false` | One archive per non-hidden subfolder of `root`, named after the subfolder. `include` is ignored. Top-level `exclude` patterns also filter subfolder names. |
+| `per_subfolder` | `false` | One archive per non-hidden subfolder of `source`, named after the subfolder. `include` is ignored. Top-level `exclude` patterns also filter subfolder names. |
 | `keep` | `1` | `1`: one archive, replaced on each change; rely on the sync service's version history. More than 1: timestamped archives, the newest `keep` are kept. |
 | `keep_max_size` | *(none)* | With `keep` above 1, also delete the oldest versions once their total size would pass this. The newest is always kept. |
 | `chunk_size` | *(none)* | Cut the archive into parts of at most this size (`.001`, `.002`, ...). Helps sync apps that struggle with multi-GB files. |
 | `alert_after` | 3× `every`, min `1d` | Notify when the job hasn't had a successful pass for this long. `0` turns it off. |
 | `skip_if_running` | *(none)* | Comma-separated process names. If any is running, skip and retry next run. |
 | `pre` | *(none)* | Command to run first (e.g. an inventory hook). |
-| `preset` | *(none)* | Comma-separated presets from `presets.ini` (below). |
+| `rulegroup` | *(none)* | Comma-separated rulegroups from `rulegroups.ini` (below). |
 | `enabled` | `true` | `false` skips the job. |
 
-**`copy` mode** doesn't archive. It copies each non-hidden file directly inside `root` (not recursive) to `dest`, renamed with the machine suffix, and only when its content changed. This keeps inventories readable in the sync service's web UI and on a phone.
+**`copy` mode** doesn't archive. It copies each non-hidden file directly inside `source` (not recursive) to `dest`, renamed with the machine suffix, and only when its content changed. This keeps inventories readable in the sync service's web UI and on a phone.
 
 **Exclude patterns** are passed to tar's `--exclude`. The scripts use bsdtar (libarchive) on all platforms when available: macOS `/usr/bin/tar`, Windows `tar.exe`, and `bsdtar` on Linux (package `libarchive-tools`). GNU tar follows the same rules for these patterns. Checked against bsdtar 3.5–3.8:
 
 - **A pattern matches a path, or the end of one, at any depth.** `node_modules` and `*.sqlite` match that name anywhere. `.obsidian/workspace.json` matches that file under any folder, including the top.
 - **`*` also matches `/`**: `*minecraft/logs` matches both `minecraft/logs` and `.minecraft/logs`.
-- **There's no way to anchor a pattern to the root.** Use a more specific path if a short name would catch too much.
+- **There's no way to anchor a pattern to the top of `source`.** Use a more specific path if a short name would catch too much.
 - **Patterns are case-sensitive**, on Windows too: `*.log` doesn't match `Debug.LOG`.
 - **Slashes:** always write `/`. The PowerShell script converts `\` for you.
 
@@ -201,38 +201,41 @@ Path expansion applies to `root`, `drive_root`, `state`, `staging`, and `pre`:
 
 With `gitignore = false`, or when git isn't installed, units are archived without these rules. On macOS, git is only used if the Command Line Tools are installed, which avoids an install prompt from `/usr/bin/git`.
 
-If your home folder is itself a git repo that ignores everything by default (a `*` line in `~/.gitignore`), jobs rooted in `~` would skip every untracked file. Set `gitignore = false` on those jobs.
+If your home folder is itself a git repo that ignores everything by default (a `*` line in `~/.gitignore`), jobs with `source = ~` would skip every untracked file. Set `gitignore = false` on those jobs.
 
 **Change detection skips excluded files**, matching them the same way tar does. It doesn't read `.gitignore`, so a change to a git-ignored file (build output, a `node_modules` install inside a repo) can trigger a rebuild that wasn't needed. Creating or deleting an excluded file also counts, because it changes its parent folder's timestamp. Neither can cause a real change to be missed.
 
-### Presets
+### Rulegroups
 
-`presets.ini` (next to the scripts) holds known folders and what's worth keeping in them, in the same format as the config. A job uses one or more with `preset = NAME` or `preset = a, b`:
+A rulegroup is a named set of job keys, usually the includes and excludes for one app's folder, that any job can reuse. `rulegroups.ini` (next to the scripts) holds them, in the same format as the config. A job uses one or more with `rulegroup = NAME` or `rulegroup = a, b`:
 
 ```ini
-[codex]
-preset = codex
+[ai-settings]
+rulegroup = ai.claude, ai.codex
 dest = Config
 ```
 
-- **Precedence.** A key the job sets wins over its presets, and a later preset wins over an earlier one; both win over `[global]`. `include` and `exclude` lines add up.
-- **Paths inside your home folder.** Presets with includes set `root = ~` and list paths like `.codex/config.toml`, so their archives extract back into `~`. Missing includes are skipped, which lets a preset list every variant of a file (e.g. the Setapp version of an app's preferences).
+- **Precedence.** A key the job sets wins over its rulegroups, and a later rulegroup wins over an earlier one; both win over `[global]`. `include` and `exclude` lines add up.
+- **Paths inside your home folder.** Rulegroups with includes set `source = ~` and list paths like `.codex/config.toml`, so their archives extract back into `~`. Missing includes are skipped, which lets a rulegroup list every variant of a file (e.g. the Setapp version of an app's preferences).
 - **Include lists, not exclude lists.** The unchanged check only looks at included paths, so tools that rewrite their databases all day don't cause a rebuild every run. And exclude patterns can't be anchored, so excluding `cache` in a tool folder would also drop same-named folders inside it.
-- **`--add` suggests them.** Enter a folder like `~/.codex` or `~/Library/Application Support`, and it offers the presets for the apps found inside it.
+- **`--add` suggests them.** Enter a folder like `~/.codex` or `~/Library/Application Support`, and it offers the rulegroups for the apps found inside it.
 - **Unknown names fail the job**, so a typo never turns into an archive of your whole home folder.
 
-| Preset | Keeps |
-|---|---|
-| `agents` | `~/.agents` (shared agent skills) |
-| `claude` | Claude Code instructions, settings, agents, commands, skills, hooks, installed plugin list. Not transcripts or session state. |
-| `codex` | Codex `config.toml`, `AGENTS.md`, agents, rules, prompts, skills, memories. Not `auth.json`, sessions, logs or plugins. |
-| `obsidian` | Excludes only: workspace layout files and `.trash`. Works under any root. |
-| `alfred`, `audio-hijack`, `lasso`, `transmission`, `istat-menus` | macOS app settings, mostly from `~/Library/Preferences`. |
-| `renoise` | Renoise user library, license and preferences. |
-| `helium` | The Helium browser profile without caches, cookies or saved passwords. Runs weekly, only while the browser is closed. |
-| `prism-instances` | Excludes and settings for Prism Launcher's `instances` folder: one archive per instance. |
+The shipped rulegroups are examples drawn from real setups, not a catalog. Names are `category.name`, sorted by category:
 
-The comments in `presets.ini` say what each one leaves out and why. To add a preset, add a section there.
+| Rulegroup | Keeps |
+|---|---|
+| `ai.agents` | `~/.agents` (shared agent skills) |
+| `ai.claude` | Claude Code instructions, settings, agents, commands, skills, hooks, installed plugin list. Not transcripts or session state. |
+| `ai.codex` | Codex `config.toml`, `AGENTS.md`, agents, rules, prompts, skills, memories. Not `auth.json`, sessions, logs or plugins. |
+| `audio.audio-hijack`, `audio.renoise` | App settings and libraries (macOS paths). |
+| `browsers.helium` | The Helium browser profile without caches, cookies or saved passwords (macOS path). Runs weekly, only while the browser is closed. |
+| `games.prism-instances` | Excludes and settings for Prism Launcher's `instances` folder: one archive per instance. Works under any source. |
+| `network.transmission` | Transmission settings and torrent list (macOS). |
+| `notes.obsidian` | Excludes only: workspace layout files and `.trash`. Works under any source. |
+| `utilities.alfred`, `utilities.istat-menus`, `utilities.lasso` | macOS app settings, mostly from `~/Library/Preferences`. |
+
+The comments in `rulegroups.ini` say what each one leaves out and why. To add your own, copy the closest section, give it a new `category.name`, and change its paths. `browsers.helium`, for example, works for any Chromium browser once its include points at that browser's profile folder.
 
 ## Secrets and encryption
 
@@ -245,8 +248,8 @@ AutoBackup doesn't encrypt archives. That's what makes them openable with any ar
 
 - Tool config folders can hold tokens in plain text. The templates back up `~/.config`, so check it. For example, `gh` keeps its token in the system keychain when one is available, but otherwise writes it to `~/.config/gh/hosts.yml`, which is common on Linux without a keyring.
 - `.ssh/config` in the templates holds host settings only. Private keys (`~/.ssh/id_*`) aren't included.
-- The presets leave out the credential files they know about: Codex `auth.json`, and Helium cookies and saved passwords. Prism's `accounts.json` sits outside `instances/`, so the Minecraft job never sees it.
-- Agent transcripts and shell history can contain anything that was pasted into them. The presets leave them out, and the templates don't include shell history.
+- The rulegroups leave out the credential files they know about: Codex `auth.json`, and Helium cookies and saved passwords. Prism's `accounts.json` sits outside `instances/`, so the Minecraft job never sees it.
+- Agent transcripts and shell history can contain anything that was pasted into them. The rulegroups leave them out, and the templates don't include shell history.
 
 **Keeping secrets out**
 
@@ -276,8 +279,8 @@ Every archive opens with ordinary tools, so the restore scripts are optional. Th
 ```
 
 - **Names.** Use the job name, or the subfolder name for `per_subfolder` jobs. A path to an archive file (or its `.001` part) works too. `--list NAME` shows every version.
-- **Where files go.** By default, each archive gets a new folder under `~/autobackup-restore`. `--to DIR` extracts into `DIR` instead. Paths in an archive are relative to its job's `root`, so `--to ~` puts a job rooted at `~` back in place.
-- **Everything at once.** `--all` restores the newest version (or the newest up to `--at`) of every archive for the machine. Jobs have different roots, so each archive always gets its own folder; with `--all`, `--to DIR` is the folder that holds them.
+- **Where files go.** By default, each archive gets a new folder under `~/autobackup-restore`. `--to DIR` extracts into `DIR` instead. Paths in an archive are relative to its job's `source`, so `--to ~` puts a job with `source = ~` back in place.
+- **Everything at once.** `--all` restores the newest version (or the newest up to `--at`) of every archive for the machine. Jobs have different sources, so each archive always gets its own folder; with `--all`, `--to DIR` is the folder that holds them.
 - **Existing files are kept.** Only files missing from the target are extracted, so a restore never loses data that's already there. `--overwrite` replaces existing files with the archive's copy, for example to bring back an older version of a config file. The drive folder is always refused, since the sync app would upload the extracted files.
 - **On a new machine.** Only `drive_root` and `machine` come from the config. Without one, pass them: `./restore.sh --drive ~/Dropbox/AutoBackup --machine MyMac dotfiles`. `--machine '*'` matches any machine.
 - **Checks.** `--verify` reads each archive through the decompressor and tar, catching missing parts and damaged files. `--dry-run` shows what would be extracted where.
@@ -355,7 +358,7 @@ For manual runs, point `--config` at a test config whose `drive_root`, `state` a
 
 - `AUTOBACKUP_NOTIFY=0` silences notifications.
 - `AUTOBACKUP_TAR` overrides the tar binary.
-- `AUTOBACKUP_PRESETS` points at another presets file.
+- `AUTOBACKUP_RULEGROUPS` points at another rulegroups file.
 
 ## Not done yet
 
