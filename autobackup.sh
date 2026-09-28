@@ -13,7 +13,9 @@ AB_HERE=$(cd "$(dirname "$0")" && pwd -P)
 AB_SELF="$AB_HERE/$(basename "$0")"
 AB_OS=$(uname -s)
 if [ "$AB_OS" = Darwin ]; then AB_PLATFORM=macos; else AB_PLATFORM=linux; fi
-AB_CONFIG="${AUTOBACKUP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/autobackup/autobackup.conf}"
+AB_CONFIG="${AUTOBACKUP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/autobackup/autobackup.ini}"
+# Known folders and what to back up in them. AUTOBACKUP_PRESETS points elsewhere (the tests use it).
+AB_PRESETS="${AUTOBACKUP_PRESETS:-$AB_HERE/presets.ini}"
 # macOS ships bsdtar. On Linux, bsdtar (package libarchive-tools) is preferred so behavior matches
 # macOS and Windows exactly; GNU tar works too.
 if [ -n "$AUTOBACKUP_TAR" ]; then AB_TAR="$AUTOBACKUP_TAR"
@@ -53,7 +55,7 @@ Usage: autobackup.sh [options]
 Runs every job in the config that is due. Meant to be called hourly by launchd or systemd.
 
 Options:
-  -c, --config FILE   Config file (default: ~/.config/autobackup/autobackup.conf,
+  -c, --config FILE   Config file (default: ~/.config/autobackup/autobackup.ini,
                       or \$AUTOBACKUP_CONFIG)
   -o, --only JOB      Run only this job, even if not due (repeatable, or comma-separated).
                       The skip-if-unchanged check still applies.
@@ -198,26 +200,51 @@ notify() {
 
 # ---------------------------------------------------------------- config
 
-# Parses the INI file into CFG records: section<US>key<US>value.
-# Keys before any [section] belong to "global". Keys are case-insensitive.
+# Every key the config understands. Anything else gets a warning and is ignored.
+AB_KEYS=' drive_root machine state staging review_every root dest include exclude gitignore compress level every per_subfolder keep keep_max_size chunk_size alert_after skip_if_running pre enabled preset '
+
+# Strips one pair of matching surrounding quotes: "x" or 'x' -> x.
+unquote() {
+    case "$1" in
+        \"*\"|\'*\') printf '%s' "${1:1:${#1}-2}" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# Parses an INI file into CFG records: section<US>key<US>value, appended to what's already there.
+# Keys before any [section] belong to "global". Keys are case-insensitive. PREFIX goes in front
+# of every section name: presets.ini loads as "preset:NAME", so presets never look like jobs.
 cfg_load() {
-    CFG=()
-    local sec=global n=0 raw line k v
+    local file="$1" prefix="$2" sec n=0 raw line k v name
+    sec="${prefix}global"
+    name=$(basename "$file")
     while IFS= read -r raw || [ -n "$raw" ]; do
         n=$((n + 1))
         line=$(trim "${raw//$'\r'/}")
         case "$line" in
             ''|'#'*|';'*) continue ;;
             '['*']')
-                sec="${line#[}"; sec=$(trim "${sec%]}") ;;
+                sec="${line#[}"; sec="$prefix$(trim "${sec%]}")" ;;
             *=*)
                 k=$(trim "${line%%=*}")
                 k=$(printf '%s' "$k" | tr '[:upper:]' '[:lower:]')
                 v=$(trim "${line#*=}")
+                case "$AB_KEYS" in
+                    *" $k "*) ;;
+                    *) log WARN "$name line $n: unknown key '$k' ignored"; continue ;;
+                esac
+                # pre is a shell command: its quotes and # mean something there.
+                if [ "$k" != pre ]; then
+                    v=$(unquote "$v")
+                    case "$v" in
+                        *[[:space:]]'#'*|*[[:space:]]';'*)
+                            log WARN "$name line $n: '$v' is used as-is; comments only work on their own line" ;;
+                    esac
+                fi
                 CFG+=("$sec$AB_SEP$k$AB_SEP$v") ;;
-            *) log WARN "config line $n ignored: $line" ;;
+            *) log WARN "$name line $n ignored: $line" ;;
         esac
-    done <"$1"
+    done <"$file"
 }
 
 # All values of key in section, in file order.
@@ -233,32 +260,89 @@ cfg_vals() {
     done
 }
 
-# Last value of key in section, else in [global], else the default.
+# Comma-separated items on stdin -> one trimmed item per line.
+list_items() {
+    local p
+    tr ',' '\n' | while IFS= read -r p; do
+        p=$(trim "$p")
+        [ -n "$p" ] && printf '%s\n' "$p"
+    done
+}
+
+# One line per item on stdin -> "a, b, c".
+comma_joined() {
+    paste -sd, - | sed 's/,/, /g'
+}
+
+# The presets a job uses, in the order listed.
+job_presets() {
+    cfg_vals "$1" preset | list_items
+}
+
+# Reads preset names on stdin; prints the last value any of them sets for KEY.
+presets_last() {
+    local p v out=''
+    while IFS= read -r p; do
+        v=$(cfg_vals "preset:$p" "$1" | tail -n 1)
+        [ -n "$v" ] && out="$v"
+    done
+    [ -n "$out" ] && printf '%s\n' "$out"
+    return 0
+}
+
+# Last value of key in the section; else from the job's presets (the last one listed wins);
+# else from [global]; else the default.
 cfg_get() {
     local v
     v=$(cfg_vals "$1" "$2" | tail -n 1)
-    if [ -z "$(cfg_vals "$1" "$2")" ]; then
-        v=$(cfg_vals global "$2" | tail -n 1)
-        if [ -z "$(cfg_vals global "$2")" ]; then v="$3"; fi
-    fi
+    [ -z "$v" ] && [ "$1" != global ] && v=$(job_presets "$1" | presets_last "$2")
+    [ -z "$v" ] && v=$(cfg_vals global "$2" | tail -n 1)
+    [ -z "$v" ] && v="$3"
     [ -n "$v" ] && printf '%s\n' "$v"
     return 0
+}
+
+# All values of a list key (include, exclude) for a job: its presets' first, then its own.
+job_vals() {
+    local p
+    while IFS= read -r p; do cfg_vals "preset:$p" "$2"; done < <(job_presets "$1")
+    cfg_vals "$1" "$2"
 }
 
 cfg_jobs() {
     local rec s seen=$'\n'
     for rec in "${CFG[@]}"; do
         s="${rec%%"$AB_SEP"*}"
-        [ "$s" = global ] && continue
+        case "$s" in global|preset:*) continue ;; esac
         case "$seen" in *$'\n'"$s"$'\n'*) continue ;; esac
         seen="$seen$s"$'\n'
         printf '%s\n' "$s"
     done
 }
 
-# Creates the config from templates/<platform>.conf if it doesn't exist yet.
+preset_names() {
+    local rec s seen=$'\n'
+    for rec in "${CFG[@]}"; do
+        s="${rec%%"$AB_SEP"*}"
+        case "$s" in preset:global) continue ;; preset:*) s="${s#preset:}" ;; *) continue ;; esac
+        case "$seen" in *$'\n'"$s"$'\n'*) continue ;; esac
+        seen="$seen$s"$'\n'
+        printf '%s\n' "$s"
+    done
+}
+
+# Reads preset names on stdin; prints the ones presets.ini doesn't define.
+unknown_presets() {
+    local known p
+    known=$(preset_names)
+    while IFS= read -r p; do
+        printf '%s\n' "$known" | grep -qxF -- "$p" || printf '%s\n' "$p"
+    done
+}
+
+# Creates the config from templates/<platform>.ini if it doesn't exist yet.
 cfg_create() {
-    local tpl="$AB_HERE/templates/$AB_PLATFORM.conf"
+    local tpl="$AB_HERE/templates/$AB_PLATFORM.ini"
     [ -f "$AB_CONFIG" ] && return 0
     [ -f "$tpl" ] || { echo "Config not found: $AB_CONFIG (and no template at $tpl)" >&2; return 1; }
     mkdir -p "$(dirname "$AB_CONFIG")" && cp "$tpl" "$AB_CONFIG" || return 1
@@ -723,6 +807,10 @@ run_job() {
     if ! is_true "$(cfg_get "$job" enabled true)"; then
         vlog "[$job] disabled"; return 0
     fi
+    l=$(job_presets "$job" | unknown_presets | comma_joined)
+    if [ -n "$l" ]; then
+        log ERROR "[$job] unknown preset: $l (known: $(preset_names | comma_joined))"; return 1
+    fi
     root=$(expand_path "$(cfg_get "$job" root)")
     dest=$(cfg_get "$job" dest); dest="${dest#/}"; dest="${dest%/}"
     if [ -z "$(cfg_get "$job" root)" ] || [ -z "$dest" ]; then
@@ -780,7 +868,7 @@ run_job() {
     fi
 
     AB_U_EXC=()
-    while IFS= read -r l; do AB_U_EXC+=("$l"); done < <(cfg_vals global exclude; cfg_vals "$job" exclude)
+    while IFS= read -r l; do AB_U_EXC+=("$l"); done < <(cfg_vals global exclude; job_vals "$job" exclude)
 
     if [ "$J_METHOD" = copy ]; then
         copy_files "$job" "$root" "$J_DESTDIR" || fail=1
@@ -803,7 +891,7 @@ run_job() {
         [ $found -eq 0 ] && log WARN "[$job] per_subfolder = true but no subfolders in $root"
     else
         AB_U_INC=()
-        while IFS= read -r l; do AB_U_INC+=("$l"); done < <(cfg_vals "$job" include)
+        while IFS= read -r l; do AB_U_INC+=("$l"); done < <(job_vals "$job" include)
         [ ${#AB_U_INC[@]} -eq 0 ] && AB_U_INC=(.)
         archive_unit "$job" "$job" "$root" || fail=1
     fi
@@ -870,56 +958,132 @@ cmd_list() {
     same_volume_warning
 }
 
+# Presets that cover folder PATH or something inside it, and exist on this machine. Only presets
+# rooted at ~ match, by their include paths.
+presets_for() {
+    local path rel p i
+    path=$(expand_path "$1"); path="${path%/}"
+    case "$path" in "$HOME"/*) rel="${path#"$HOME"/}" ;; *) return 0 ;; esac
+    while IFS= read -r p; do
+        # shellcheck disable=SC2088  # a literal ~, as written in presets.ini
+        [ "$(cfg_vals "preset:$p" root | tail -n 1)" = '~' ] || continue
+        while IFS= read -r i; do
+            case "$i" in "$rel"|"$rel"/*) ;; *) continue ;; esac
+            if [ -e "$HOME/$i" ] || [ -L "$HOME/$i" ]; then printf '%s\n' "$p"; break; fi
+        done < <(cfg_vals "preset:$p" include)
+    done < <(preset_names)
+}
+
+add_name_ok() {
+    case "$1" in
+        ''|*[!A-Za-z0-9._-]*) echo "Invalid job name: '$1'" >&2; return 1 ;;
+    esac
+    if cfg_jobs | grep -qxF -- "$1"; then
+        echo "Job [$1] already exists in $AB_CONFIG. Edit it there (--edit)." >&2; return 1
+    fi
+}
+
+# The default an interactive --add prompt shows: from the chosen presets, else [global].
+add_default() {
+    local v
+    v=$(printf '%s\n' "$presets" | list_items | presets_last "$1")
+    [ -n "$v" ] || v=$(cfg_get global "$1" "$2")
+    printf '%s\n' "$v"
+}
+
 cmd_add() {
-    local name="$1" p k v have_root=0 have_dest=0 npairs
+    local name="$1" p k v npairs root='' dest='' presets='' sugg bad def lines=() out
     [ $# -gt 0 ] && shift
     npairs=$#
-    if [ -z "$name" ]; then
-        read -r -p 'Job name (letters, digits, . _ -): ' name || return 1
-    fi
-    case "$name" in
-        ''|*[!A-Za-z0-9._-]*) echo "Invalid job name: '$name'" >&2; return 1 ;;
-    esac
-    if cfg_jobs | grep -qxF -- "$name"; then
-        echo "Job [$name] already exists in $AB_CONFIG. Edit it there (--edit)." >&2; return 1
-    fi
-    local lines=("[$name]")
+    if [ -n "$name" ]; then add_name_ok "$name" || return 1; fi
     for p in "$@"; do
         case "$p" in
             [A-Za-z_]*=*) ;;
             *) echo "Expected key=value, got: $p" >&2; return 1 ;;
         esac
         k="${p%%=*}"; v="${p#*=}"
-        lines+=("$k = $v")
-        [ "$k" = root ] && have_root=1
-        [ "$k" = dest ] && have_dest=1
+        case "$k" in
+            root) root="$v" ;;
+            dest) dest="$v" ;;
+            preset) presets="$v" ;;
+            *) lines+=("$k = $v") ;;
+        esac
     done
-    if [ $have_root -eq 0 ]; then
-        read -r -p 'Source folder (root): ' v || return 1
-        [ -n "$v" ] || return 1
-        lines+=("root = $v")
+    bad=$(printf '%s\n' "$presets" | list_items | unknown_presets | comma_joined)
+    if [ -n "$bad" ]; then
+        echo "Unknown preset: $bad (known: $(preset_names | comma_joined))" >&2; return 1
     fi
-    if [ $have_dest -eq 0 ]; then
-        read -r -p 'Drive subfolder under the drive root (e.g. Documents/Obsidian): ' v || return 1
-        [ -n "$v" ] || return 1
-        lines+=("dest = $v")
+
+    if [ -z "$root" ] && { [ "$npairs" -eq 0 ] || [ -z "$(add_default root)" ]; }; then
+        read -r -p 'Source folder (root): ' root || return 1
+        [ -n "$root" ] || return 1
     fi
+
     if [ "$npairs" -eq 0 ]; then
-        echo 'Paths inside root to include, one per line. Blank line = done (none = whole root).'
-        while read -r -p '  include: ' v && [ -n "$v" ]; do lines+=("include = $v"); done
+        sugg=$(presets_for "$root" | comma_joined)
+        while :; do
+            if [ -n "$sugg" ]; then
+                read -r -p "Presets for this folder ('none' to skip) [$sugg]: " presets || return 1
+                [ -n "$presets" ] || presets="$sugg"
+            else
+                read -r -p "Presets, comma-separated (blank for none; known: $(preset_names | comma_joined)): " presets || return 1
+            fi
+            [ "$presets" = none ] && presets=''
+            bad=$(printf '%s\n' "$presets" | list_items | unknown_presets | comma_joined)
+            [ -z "$bad" ] && break
+            echo "Unknown preset: $bad" >&2
+        done
+        # A preset's includes are paths inside ~, so its root applies instead of the folder typed.
+        def=$(add_default root)
+        if [ -n "$presets" ] && [ -n "$(printf '%s\n' "$presets" | list_items | presets_last root)" ]; then
+            echo "Root: $def (from the preset)"
+            root=''
+        fi
+    fi
+    presets=$(printf '%s\n' "$presets" | list_items | comma_joined)
+
+    if [ -z "$name" ]; then
+        def=''
+        case "$presets" in *,*|'') ;; *) def="$presets" ;; esac
+        [ -z "$def" ] && [ -n "$root" ] && def=$(sanitize "$(basename "$(expand_path "$root")")" | tr '[:upper:]' '[:lower:]')
+        cfg_jobs | grep -qxF -- "$def" && def=''
+        while :; do
+            read -r -p "Job name (letters, digits, . _ -)${def:+ [$def]}: " name || return 1
+            [ -n "$name" ] || name="$def"
+            add_name_ok "$name" && break
+        done
+    fi
+
+    if [ -z "$dest" ]; then
+        read -r -p 'Drive subfolder under the drive root (e.g. Documents/Obsidian): ' dest || return 1
+        [ -n "$dest" ] || return 1
+    fi
+
+    if [ "$npairs" -eq 0 ]; then
+        if [ -z "$(add_default include)" ]; then
+            echo 'Paths inside root to include, one per line. Blank line = done (none = whole root).'
+            while read -r -p '  include: ' v && [ -n "$v" ]; do lines+=("include = $v"); done
+        fi
         echo 'Exclude patterns (e.g. node_modules, *.log, sub/dir). Blank line = done.'
         while read -r -p '  exclude: ' v && [ -n "$v" ]; do lines+=("exclude = $v"); done
-        read -r -p "Compression: zstd, gzip, none or copy [default $(cfg_get global compress zstd)]: " v
+        read -r -p "Compression: zstd, gzip, none or copy [default $(add_default compress zstd)]: " v
         [ -n "$v" ] && lines+=("compress = $v")
-        read -r -p "How often, e.g. 12h, 1d, 7d [default $(cfg_get global every 1d)]: " v
+        read -r -p "How often, e.g. 12h, 1d, 7d [default $(add_default every 1d)]: " v
         [ -n "$v" ] && lines+=("every = $v")
-        read -r -p 'One archive per subfolder of root? [y/N]: ' v
-        is_true "$v" && lines+=("per_subfolder = true")
+        if [ -z "$(add_default per_subfolder)" ]; then
+            read -r -p 'One archive per subfolder of root? [y/N]: ' v
+            is_true "$v" && lines+=("per_subfolder = true")
+        fi
     fi
+
+    out=("[$name]")
+    [ -n "$presets" ] && out+=("preset = $presets")
+    [ -n "$root" ] && out+=("root = $root")
+    out+=("dest = $dest" "${lines[@]}")
     printf '\n' >>"$AB_CONFIG"
-    printf '%s\n' "${lines[@]}" >>"$AB_CONFIG"
+    printf '%s\n' "${out[@]}" >>"$AB_CONFIG"
     echo "Added to $AB_CONFIG:"
-    printf '  %s\n' "${lines[@]}"
+    printf '  %s\n' "${out[@]}"
     echo "Test it: $AB_SELF --only $name --dry-run -v"
 }
 
@@ -1078,6 +1242,7 @@ if [ ! -f "$AB_CONFIG" ]; then
     exit 1
 fi
 
+[ -f "$AB_PRESETS" ] && cfg_load "$AB_PRESETS" preset:
 cfg_load "$AB_CONFIG"
 AB_MACHINE=$(cfg_get global machine)
 AB_DRIVE=$(expand_path "$(cfg_get global drive_root)"); AB_DRIVE="${AB_DRIVE%/}"

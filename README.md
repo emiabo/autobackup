@@ -19,7 +19,7 @@ macOS or Linux:
 
 ```sh
 git clone https://github.com/emiabo/autobackup.git ~/Code/autobackup && cd ~/Code/autobackup
-./autobackup.sh --edit       # creates ~/.config/autobackup/autobackup.conf from the template
+./autobackup.sh --edit       # creates ~/.config/autobackup/autobackup.ini from the template
 ./autobackup.sh --dry-run -v # check what it would write
 ./autobackup.sh --install    # hourly + at login
 ```
@@ -28,7 +28,7 @@ Windows (PowerShell 5.1 or 7):
 
 ```powershell
 git clone https://github.com/emiabo/autobackup.git $HOME\Code\autobackup; cd $HOME\Code\autobackup
-.\AutoBackup.ps1 -Edit       # creates %APPDATA%\AutoBackup\autobackup.conf from the template
+.\AutoBackup.ps1 -Edit       # creates %APPDATA%\AutoBackup\autobackup.ini from the template
 .\AutoBackup.ps1 -DryRun -Verbose
 .\AutoBackup.ps1 -Install    # hourly + at logon
 ```
@@ -41,7 +41,8 @@ Setting `drive_root` and `machine` is the only required edit. [SETUP.md](SETUP.m
 |---|---|
 | `autobackup.sh` | macOS and Linux. bash 3.2+ (macOS `/bin/bash`). |
 | `AutoBackup.ps1` | Windows. Windows PowerShell 5.1 and PowerShell 7. ASCII-only. |
-| `templates/macos.conf`, `linux.conf`, `windows.conf` | Starting job lists. `--edit` / `-Edit` copies the right one into place. |
+| `templates/macos.ini`, `linux.ini`, `windows.ini` | Starting job lists. `--edit` / `-Edit` copies the right one into place. |
+| `presets.ini` | Known folders (coding agents, Obsidian, some apps and games) and what to keep in them. See [Presets](#presets). |
 | `hooks/inventory.sh` | macOS/Linux app lists: `Applications.tsv`, `Brewfile`, `mas.txt`, apt/dnf/pacman/flatpak/snap lists, npm/pipx/uv/cargo globals. |
 | `hooks/Inventory.ps1` | Windows app lists: `winget.json`, `installed.csv` (Add or remove programs, from the registry), `store-apps.csv`, `scoop.json`. |
 | `SETUP.md` | Installing, scheduling, permissions, sync-app settings. |
@@ -50,7 +51,7 @@ Your own config lives outside the repo, so updating the scripts never touches it
 
 | | macOS / Linux | Windows |
 |---|---|---|
-| Config | `~/.config/autobackup/autobackup.conf` | `%APPDATA%\AutoBackup\autobackup.conf` |
+| Config | `~/.config/autobackup/autobackup.ini` | `%APPDATA%\AutoBackup\autobackup.ini` |
 | Stamps, log, lock | `~/.local/state/autobackup/` | `%LOCALAPPDATA%\AutoBackup\state\` |
 | Staging (archives being built) | `~/.cache/autobackup/` | `%LOCALAPPDATA%\AutoBackup\staging\` |
 | Inventory output | `~/.local/state/autobackup/inventory/` | `%LOCALAPPDATA%\AutoBackup\inventory\` |
@@ -112,7 +113,7 @@ To force a job to be due again, delete its `.checked` stamp. To force a full reb
 | `-v`, `--verbose` | `-Verbose` | Also show not-due, unchanged, and missing-include details. |
 | `-o JOB`, `--only JOB[,JOB]` | `-Only JOB[,JOB]` | Run just these jobs, ignoring the schedule. The unchanged check still applies. |
 | `-f`, `--force` | `-Force` | Ignore the schedule and the unchanged check. |
-| `-a [JOB] [k=v ...]`, `--add` | `-Add [JOB] [k=v ...]` | Append a job to the config. Prompts interactively when no `k=v` pairs are given. |
+| `-a [JOB] [k=v ...]`, `--add` | `-Add [JOB] [k=v ...]` | Append a job to the config. Prompts interactively when no `k=v` pairs are given, and suggests [presets](#presets) for known folders. |
 | `-e`, `--edit` | `-Edit` | Open the config in `$VISUAL`/`$EDITOR` (fallback: TextEdit, `xdg-open`, Notepad). Creates it from the template first. |
 | `--install` | `-Install` | Schedule hourly + login runs (LaunchAgent, systemd user timer, or Task Scheduler). |
 | `--uninstall` | `-Uninstall` | Remove the schedule. Config, state and archives stay. |
@@ -122,6 +123,7 @@ Examples:
 
 ```sh
 ./autobackup.sh --add screenshots root=~/Pictures/Screenshots dest=Pictures every=7d compress=none
+./autobackup.sh --add codex preset=codex dest=Config
 ./autobackup.sh --only screenshots --dry-run -v
 ```
 
@@ -132,11 +134,12 @@ Examples:
 
 ## Config reference
 
-The config is INI-style: a `[global]` section, then one `[job]` section per backup job. Other rules:
+The config is an INI file: a `[global]` section, then one `[job]` section per backup job. Other rules:
 
-- `#` and `;` start comment lines.
-- Keys are case-insensitive. Values are taken literally; don't quote them.
-- `include` and `exclude` can repeat. Every other key uses its last value.
+- `#` and `;` start a comment only at the beginning of a line. A value containing ` #` is used as-is, with a warning.
+- Keys are case-insensitive. Unknown keys (typos like `exlude`) are ignored with a warning.
+- Values are taken literally. Quotes are optional: one pair around the whole value is removed, except in `pre`, which is passed to the shell unchanged.
+- `include`, `exclude` and `preset` can repeat. Every other key uses its last value.
 - Any job key set in `[global]` becomes the default for all jobs.
 - `exclude` lines in `[global]` are added to each job's own excludes.
 - Durations: `30m`, `12h`, `1d`, `2w` (a bare number means hours). Sizes: `500M`, `4G`, `1T`.
@@ -175,6 +178,7 @@ Path expansion applies to `root`, `drive_root`, `state`, `staging`, and `pre`:
 | `alert_after` | 3× `every`, min `1d` | Notify when the job hasn't had a successful pass for this long. `0` turns it off. |
 | `skip_if_running` | *(none)* | Comma-separated process names. If any is running, skip and retry next run. |
 | `pre` | *(none)* | Command to run first (e.g. an inventory hook). |
+| `preset` | *(none)* | Comma-separated presets from `presets.ini` (below). |
 | `enabled` | `true` | `false` skips the job. |
 
 **`copy` mode** doesn't archive. It copies each non-hidden file directly inside `root` (not recursive) to `dest`, renamed with the machine suffix, and only when its content changed. This keeps inventories readable in the sync service's web UI and on a phone.
@@ -198,6 +202,35 @@ With `gitignore = false`, or when git isn't installed, units are archived withou
 If your home folder is itself a git repo that ignores everything by default (a `*` line in `~/.gitignore`), jobs rooted in `~` would skip every untracked file. Set `gitignore = false` on those jobs.
 
 **Change detection is conservative.** It ignores excludes and `.gitignore`. An excluded file that changes, such as a sqlite database, `workspace.json` or a `node_modules` install, can trigger a rebuild that wasn't needed. It can never cause a real change to be missed.
+
+### Presets
+
+`presets.ini` (next to the scripts) holds known folders and what's worth keeping in them, in the same format as the config. A job uses one or more with `preset = NAME` or `preset = a, b`:
+
+```ini
+[codex]
+preset = codex
+dest = Config
+```
+
+- **Precedence.** A key the job sets wins over its presets, and a later preset wins over an earlier one; both win over `[global]`. `include` and `exclude` lines add up.
+- **Paths inside your home folder.** Presets with includes set `root = ~` and list paths like `.codex/config.toml`, so their archives extract back into `~`. Missing includes are skipped, which lets a preset list every variant of a file (e.g. the Setapp version of an app's preferences).
+- **Include lists, not exclude lists.** The unchanged check only looks at included paths, so tools that rewrite their databases all day don't cause a rebuild every run. And exclude patterns can't be anchored, so excluding `cache` in a tool folder would also drop same-named folders inside it.
+- **`--add` suggests them.** Enter a folder like `~/.codex` or `~/Library/Application Support`, and it offers the presets for the apps found inside it.
+- **Unknown names fail the job**, so a typo never turns into an archive of your whole home folder.
+
+| Preset | Keeps |
+|---|---|
+| `agents` | `~/.agents` (shared agent skills) |
+| `claude` | Claude Code instructions, settings, agents, commands, skills, hooks, installed plugin list. Not transcripts or session state. |
+| `codex` | Codex `config.toml`, `AGENTS.md`, agents, rules, prompts, skills, memories. Not `auth.json`, sessions, logs or plugins. |
+| `obsidian` | Excludes only: workspace layout files and `.trash`. Works under any root. |
+| `alfred`, `audio-hijack`, `lasso`, `transmission`, `istat-menus` | macOS app settings, mostly from `~/Library/Preferences`. |
+| `renoise` | Renoise user library, license and preferences. |
+| `helium` | The Helium browser profile without caches, cookies or saved passwords. Runs weekly, only while the browser is closed. |
+| `prism-instances` | Excludes and settings for Prism Launcher's `instances` folder: one archive per instance. |
+
+The comments in `presets.ini` say what each one leaves out and why. To add a preset, add a section there.
 
 ## Restoring
 
@@ -271,6 +304,7 @@ For manual runs, point `--config` at a test config whose `drive_root`, `state` a
 
 - `AUTOBACKUP_NOTIFY=0` silences notifications.
 - `AUTOBACKUP_TAR` overrides the tar binary.
+- `AUTOBACKUP_PRESETS` points at another presets file.
 
 ## Not done yet
 

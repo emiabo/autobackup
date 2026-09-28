@@ -30,7 +30,7 @@ A lock (a lock dir on macOS/Linux, a named mutex on Windows) stops the hourly ru
 ```sh
 cd ~/Code/autobackup
 brew install zstd              # optional; without it archives fall back to .tar.gz (macOS tar has no zstd)
-./autobackup.sh --edit         # creates ~/.config/autobackup/autobackup.conf; set drive_root and machine
+./autobackup.sh --edit         # creates ~/.config/autobackup/autobackup.ini; set drive_root and machine
 ls ~/Library/CloudStorage      # helps find your sync folder's name
 ./autobackup.sh --list
 ./autobackup.sh --dry-run -v   # shows every archive it would write, and skipped includes
@@ -106,7 +106,7 @@ Works in both `powershell` (5.1) and `pwsh` (7).
 cd $HOME\Code\autobackup
 Get-ChildItem -Recurse | Unblock-File   # only needed if you downloaded a zip
 winget install -e --id Meta.Zstandard   # optional; see below
-.\AutoBackup.ps1 -Edit                  # creates %APPDATA%\AutoBackup\autobackup.conf; set drive_root and machine
+.\AutoBackup.ps1 -Edit                  # creates %APPDATA%\AutoBackup\autobackup.ini; set drive_root and machine
 .\AutoBackup.ps1 -List
 .\AutoBackup.ps1 -DryRun -Verbose
 .\AutoBackup.ps1 -Install

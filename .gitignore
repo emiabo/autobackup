@@ -1,7 +1,10 @@
 # Personal job configs. Start from templates/ and keep your own copy out of the repo.
 /*.conf
+/*.ini
+!/presets.ini
 
 .DS_Store
 Thumbs.db
 desktop.ini
 testResults.xml
+TASKS.md

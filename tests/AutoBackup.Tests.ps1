@@ -34,7 +34,7 @@ Describe '<Impl>' -ForEach $impls {
             if ($Impl -eq 'bash') {
                 $out = & $bash (Join-Path $repo 'autobackup.sh') --config $conf @Flags 2>&1
             } else {
-                $map = @{ '--force' = '-Force'; '--dry-run' = '-DryRun'; '--list' = '-List'; '--verbose' = '-Verbose'; '--only' = '-Only' }
+                $map = @{ '--force' = '-Force'; '--dry-run' = '-DryRun'; '--list' = '-List'; '--verbose' = '-Verbose'; '--only' = '-Only'; '--add' = '-Add' }
                 $psFlags = @($Flags | ForEach-Object { if ($map.ContainsKey($_)) { $map[$_] } else { $_ } })
                 $out = & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'AutoBackup.ps1') -Config $conf @psFlags 2>&1
             }
@@ -71,8 +71,13 @@ Describe '<Impl>' -ForEach $impls {
         $drive = Join-Path $root 'drive/AutoBackup'
         $state = Join-Path $root 'state'
         $staging = Join-Path $root 'staging'
-        $conf = Join-Path $root 'test.conf'
+        $conf = Join-Path $root 'test.ini'
+        $presets = Join-Path $root 'presets.ini'
         New-Item -ItemType Directory -Force -Path $src, (Split-Path -Parent $drive) | Out-Null
+    }
+
+    AfterEach {
+        Remove-Item Env:AUTOBACKUP_PRESETS -ErrorAction SilentlyContinue
     }
 
     It 'archives a folder, skips it when unchanged, and rebuilds after a change' {
@@ -205,5 +210,57 @@ Describe '<Impl>' -ForEach $impls {
         (Invoke-AB '--only', 'fresh').Code | Should -Be 0
         Get-Content (Join-Path $state 'autobackup.log') -Raw | Should -Match 'no successful backup in a while: old'
         (Invoke-AB '--list').Text | Should -Match 'old\s.*\sstale'
+    }
+
+    It 'takes root, includes and settings from a preset, with job keys winning' {
+        New-File (Join-Path $src 'keep/a.txt')
+        New-File (Join-Path $src 'keep/b.log')
+        New-File (Join-Path $src 'keep/c.tmp')
+        New-File (Join-Path $src 'other.txt')
+        [IO.File]::WriteAllText($presets, "[tool]`nroot = $src`ninclude = keep`nexclude = *.log`ncompress = gzip`nevery = 7d`n")
+        $env:AUTOBACKUP_PRESETS = $presets
+        Set-Jobs "[mytool]`npreset = tool`ndest = Tools`ncompress = none`nexclude = *.tmp`n"
+
+        (Invoke-AB '--force').Code | Should -Be 0
+        Get-Entries (Join-Path $drive 'Tools/mytool_T.tar') | Should -Be @('keep/a.txt')
+        (Invoke-AB '--list').Text | Should -Match 'mytool\s+none\s+7d\s'
+    }
+
+    It 'fails a job that names an unknown preset' {
+        New-File (Join-Path $src 'a.txt')
+        Set-Jobs "[typo]`npreset = no-such-preset`nroot = $src`ndest = Typo`n"
+
+        $r = Invoke-AB '--force'
+        $r.Code | Should -Not -Be 0
+        $r.Text | Should -Match 'unknown preset: no-such-preset'
+        Test-Path $drive | Should -BeFalse
+    }
+
+    It 'warns about unknown keys and trailing comments, and strips quotes' {
+        New-File (Join-Path $src 'a.txt')
+        Set-Jobs "[plain]`nroot = `"$src`"`ndest = 'Plain'`nexlude = *.txt`nevery = 1d  # daily`n"
+
+        $r = Invoke-AB '--dry-run'
+        $r.Text | Should -Match "unknown key 'exlude' ignored"
+        $r.Text | Should -Match 'comments only work on their own line'
+        $r.Text | Should -Match 'would write .*Plain[\\/]plain_T\.tar'
+    }
+
+    It 'loads the shipped presets.ini without warnings' {
+        Set-Jobs ''
+        $r = Invoke-AB '--list'
+        $r.Code | Should -Be 0
+        $r.Text | Should -Not -Match 'WARN'
+    }
+
+    It 'adds a job that uses a preset without asking for its root' {
+        [IO.File]::WriteAllText($presets, "[tool]`nroot = $src`ninclude = keep`n")
+        $env:AUTOBACKUP_PRESETS = $presets
+        Set-Jobs ''
+
+        (Invoke-AB '--add', 'mytool', 'preset=tool', 'dest=Tools').Code | Should -Be 0
+        $text = [IO.File]::ReadAllText($conf)
+        $text | Should -Match '\[mytool\]\r?\npreset = tool\r?\ndest = Tools'
+        $text | Should -Not -Match '(?m)^root = '
     }
 }
