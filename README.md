@@ -43,6 +43,7 @@ Setting `drive_root` and `machine` is the only required edit. [SETUP.md](SETUP.m
 | `AutoBackup.ps1` | Windows. Windows PowerShell 5.1 and PowerShell 7. ASCII-only. |
 | `templates/macos.ini`, `linux.ini`, `windows.ini` | Starting job lists. `--edit` / `-Edit` copies the right one into place. |
 | `presets.ini` | Known folders (coding agents, Obsidian, some apps and games) and what to keep in them. See [Presets](#presets). |
+| `restore.sh`, `Restore.ps1` | Optional. Find, verify and extract archives. See [Restoring](#restoring). |
 | `hooks/inventory.sh` | macOS/Linux app lists: `Applications.tsv`, `Brewfile`, `mas.txt`, apt/dnf/pacman/flatpak/snap lists, npm/pipx/uv/cargo globals. |
 | `hooks/Inventory.ps1` | Windows app lists: `winget.json`, `installed.csv` (Add or remove programs, from the registry), `store-apps.csv`, `scoop.json`. |
 | `SETUP.md` | Installing, scheduling, permissions, sync-app settings. |
@@ -259,7 +260,31 @@ Put `drive_root` inside an encrypted folder that syncs as ciphertext, such as a 
 
 ## Restoring
 
-Extract to a scratch folder first and copy back what you need. Extracting dotfiles straight into `~` overwrites live config.
+Every archive opens with ordinary tools, so the restore scripts are optional. They find the newest version, join chunked parts, pick the decompressor, and extract into a scratch folder. Files that already exist are never replaced unless you ask.
+
+```sh
+./restore.sh --list                  # archives for this machine: newest version, count, size
+./restore.sh dotfiles                # newest version -> ~/autobackup-restore/dotfiles_MyMac_<time>/
+./restore.sh --at 2026-09-01 notes   # newest version from that day or earlier (keep > 1)
+./restore.sh --all                   # every archive, each into its own folder
+./restore.sh --verify                # read every newest archive to the end; extract nothing
+```
+
+```powershell
+.\Restore.ps1 -List
+.\Restore.ps1 Inst-One -To "$env:APPDATA\PrismLauncher\instances\Inst-One"
+```
+
+- **Names.** Use the job name, or the subfolder name for `per_subfolder` jobs. A path to an archive file (or its `.001` part) works too. `--list NAME` shows every version.
+- **Where files go.** By default, each archive gets a new folder under `~/autobackup-restore`. `--to DIR` extracts into `DIR` instead. Paths in an archive are relative to its job's `root`, so `--to ~` puts a job rooted at `~` back in place.
+- **Everything at once.** `--all` restores the newest version (or the newest up to `--at`) of every archive for the machine. Jobs have different roots, so each archive always gets its own folder; with `--all`, `--to DIR` is the folder that holds them.
+- **Existing files are kept.** Only files missing from the target are extracted, so a restore never loses data that's already there. `--overwrite` replaces existing files with the archive's copy, for example to bring back an older version of a config file. The drive folder is always refused, since the sync app would upload the extracted files.
+- **On a new machine.** Only `drive_root` and `machine` come from the config. Without one, pass them: `./restore.sh --drive ~/Dropbox/AutoBackup --machine MyMac dotfiles`. `--machine '*'` matches any machine.
+- **Checks.** `--verify` reads each archive through the decompressor and tar, catching missing parts and damaged files. `--dry-run` shows what would be extracted where.
+- **Needs.** zstd archives need the `zstd` CLI, or a tar with built-in zstd (bsdtar with libzstd, Windows' `tar.exe` on recent builds). The Windows script joins parts and decompresses into temp files before extracting, like `AutoBackup.ps1` builds archives in two steps.
+- **Not covered.** `copy` mode files (inventories) aren't archives; open them directly.
+
+By hand, extract to a scratch folder first and copy back what you need. Extracting dotfiles straight into `~` overwrites live config.
 
 ```sh
 mkdir ~/restore-test
@@ -289,7 +314,7 @@ To get an older snapshot, restore that version in the sync service first (its ve
 
 ## Working on this
 
-`autobackup.sh` and `AutoBackup.ps1` mirror each other. There's no canonical version, but a change to one should land in the other with the same flags, config keys, log messages and file layout. Both use the same function order and matching names (`cfg_load` / `Import-Cfg`, `archive_unit` / `Invoke-ArchiveUnit`, ...), so their diffs map across.
+`autobackup.sh` and `AutoBackup.ps1` mirror each other, as do `restore.sh` and `Restore.ps1`. There's no canonical version, but a change to one should land in the other with the same flags, config keys, log messages and file layout. Both use the same function order and matching names (`cfg_load` / `Import-Cfg`, `archive_unit` / `Invoke-ArchiveUnit`, ...), so their diffs map across.
 
 The one intended difference is how archives get built. bash pipes tar straight into zstd (and `split` for chunking), so no uncompressed copy touches the disk. PowerShell writes a raw `.tar` first and compresses it in a second step, because piping tar into zstd on Windows is reported to hang on inputs over a few hundred MB.
 
@@ -311,8 +336,9 @@ pwsh -c 'Install-Module Pester, PSScriptAnalyzer -Scope CurrentUser'   # once
 brew install shellcheck                                       # or your distro's package
 
 pwsh -c 'Invoke-Pester ./tests -Output Detailed'
-shellcheck autobackup.sh hooks/inventory.sh
+shellcheck autobackup.sh restore.sh hooks/inventory.sh
 pwsh -c 'Invoke-ScriptAnalyzer -Path AutoBackup.ps1 -Settings ./PSScriptAnalyzerSettings.psd1'
+pwsh -c 'Invoke-ScriptAnalyzer -Path Restore.ps1 -Settings ./PSScriptAnalyzerSettings.psd1'
 ```
 
 `PSScriptAnalyzerSettings.psd1` turns off rules meant for modules, and rules that flag deliberate choices; each has a comment saying why.
@@ -338,6 +364,7 @@ For manual runs, point `--config` at a test config whose `drive_root`, `state` a
 - Neither script has run against a real sync folder or from its scheduler (LaunchAgent, systemd timer, Task Scheduler).
 - Notifications (Notification Center, `notify-send`, Windows toasts) and macOS privacy permissions.
 - The inventory hooks run in CI and in Fedora and Arch containers, but haven't yet listed a real desktop's winget, Store or Mac App Store apps.
+- The restore scripts have only restored the test suite's archives, not a real machine's.
 
 **To verify per sync service**
 
@@ -351,7 +378,6 @@ For manual runs, point `--config` at a test config whose `drive_root`, `state` a
 
 **Missing features**
 
-- No restore command; restore is manual (above).
 - `keep = 1` archives are never pruned. Archives for deleted `per_subfolder` subfolders or renamed jobs stay in the drive folder until deleted by hand.
 - Chunked parts land one at a time, so the sync app can briefly see a mix of old and new parts.
 - Rebuilds are whole-archive. A small change in a large folder re-uploads all of it; `per_subfolder` and tighter `include` lists keep units small.

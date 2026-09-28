@@ -41,6 +41,28 @@ Describe '<Impl>' -ForEach $impls {
             return [pscustomobject]@{ Code = $LASTEXITCODE; Text = ($out | Out-String) }
         }
 
+        # Runs the restore script under test, the same way. Without a config file, runs without one.
+        function Invoke-Restore([string[]]$Flags) {
+            $ErrorActionPreference = 'Continue'
+            if (Test-Path -LiteralPath $conf) { $Flags = @('--config', $conf) + $Flags }
+            if ($Impl -eq 'bash') {
+                $out = & $bash (Join-Path $repo 'restore.sh') @Flags 2>&1
+            } else {
+                $map = @{ '--list' = '-List'; '--to' = '-To'; '--overwrite' = '-Overwrite'; '--at' = '-At'; '--verify' = '-Verify';
+                    '--machine' = '-Machine'; '--drive' = '-Drive'; '--config' = '-Config'; '--dry-run' = '-DryRun' }
+                $psFlags = @($Flags | ForEach-Object { if ($map.ContainsKey($_)) { $map[$_] } else { $_ } })
+                $out = & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'Restore.ps1') @psFlags 2>&1
+            }
+            return [pscustomobject]@{ Code = $LASTEXITCODE; Text = ($out | Out-String) }
+        }
+
+        # Files under DIR, relative, with / separators.
+        function Get-Tree([string]$dir) {
+            $full = (Get-Item -LiteralPath $dir).FullName.TrimEnd('\', '/')
+            @(Get-ChildItem -LiteralPath $dir -Recurse -File -Force |
+                    ForEach-Object { $_.FullName.Substring($full.Length + 1).Replace('\', '/') } | Sort-Object)
+        }
+
         # Writes the config: shared [global] settings plus the given job sections.
         function Set-Jobs([string]$jobs) {
             $global = "[global]`ndrive_root = $drive`nmachine = T`nstate = $state`nstaging = $staging`n"
@@ -77,7 +99,7 @@ Describe '<Impl>' -ForEach $impls {
     }
 
     AfterEach {
-        Remove-Item Env:AUTOBACKUP_PRESETS -ErrorAction SilentlyContinue
+        Remove-Item Env:AUTOBACKUP_PRESETS, Env:AUTOBACKUP_CONFIG -ErrorAction SilentlyContinue
     }
 
     It 'archives a folder, skips it when unchanged, and rebuilds after a change' {
@@ -279,6 +301,120 @@ Describe '<Impl>' -ForEach $impls {
         $text = [IO.File]::ReadAllText($conf)
         $text | Should -Match '\[mytool\]\r?\npreset = tool\r?\ndest = Tools'
         $text | Should -Not -Match '(?m)^root = '
+    }
+
+    It 'restores the newest version, or an older one with --at' {
+        New-File (Join-Path $src 'a.txt') 'one'
+        Set-Jobs "[notes]`nroot = $src`ndest = Notes`ncompress = gzip`nkeep = 3`n"
+        (Invoke-AB '--force').Code | Should -Be 0
+        $first = (@(Get-DriveFiles 'Notes')[0]) -replace '^notes_T_(\d{4}-\d{2}-\d{2})_(\d{6}).*$', '$1_$2'
+        Start-Sleep -Milliseconds 1100   # timestamps have 1-second resolution
+        New-File (Join-Path $src 'a.txt') 'two'
+        New-File (Join-Path $src 'sub/b.txt')
+        (Invoke-AB '--force').Code | Should -Be 0
+
+        $r = Invoke-Restore '--list', 'notes'
+        $r.Code | Should -Be 0
+        ([regex]::Matches($r.Text, 'notes_T_\d{4}')).Count | Should -Be 2
+
+        $out = Join-Path $root 'out'
+        (Invoke-Restore '--to', $out, 'notes').Code | Should -Be 0
+        Get-Tree $out | Should -Be @('a.txt', 'sub/b.txt')
+        [IO.File]::ReadAllText((Join-Path $out 'a.txt')) | Should -Be 'two'
+
+        $old = Join-Path $root 'old'
+        (Invoke-Restore '--to', $old, '--at', $first, 'notes').Code | Should -Be 0
+        Get-Tree $old | Should -Be @('a.txt')
+        [IO.File]::ReadAllText((Join-Path $old 'a.txt')) | Should -Be 'one'
+    }
+
+    It 'joins chunked parts on restore, and --verify catches a missing part' {
+        $bytes = New-Object byte[] 300000
+        (New-Object Random 1).NextBytes($bytes)
+        New-Item -ItemType Directory -Force -Path (Join-Path $src 'One'), (Join-Path $src 'Two') | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $src 'One/big.bin'), $bytes)
+        New-File (Join-Path $src 'Two/t.txt')
+        Set-Jobs "[games]`nroot = $src`ndest = Games`ncompress = gzip`nper_subfolder = true`nchunk_size = 100K`n"
+        (Invoke-AB '--force').Code | Should -Be 0
+        @(Get-DriveFiles 'Games' | Where-Object { $_ -like 'One_T.tar.gz.*' }).Count | Should -BeGreaterThan 1
+
+        $r = Invoke-Restore '--verify'
+        $r.Code | Should -Be 0
+        $r.Text | Should -Match 'ok\s+One_T\b'
+        $r.Text | Should -Match 'ok\s+Two_T\b'
+
+        $out = Join-Path $root 'out'
+        (Invoke-Restore '--to', $out, 'One').Code | Should -Be 0
+        [IO.File]::ReadAllBytes((Join-Path $out 'big.bin')).Length | Should -Be 300000
+
+        Remove-Item -LiteralPath (Join-Path $drive 'Games/One_T.tar.gz.002')
+        $r = Invoke-Restore '--verify', 'One'
+        $r.Code | Should -Not -Be 0
+        $r.Text | Should -Match 'One_T\.tar\.gz\.002 is missing'
+    }
+
+    It 'adds only missing files unless --overwrite, and refuses the drive folder' {
+        New-File (Join-Path $src 'a.txt') 'new'
+        New-File (Join-Path $src 'b.txt') 'new'
+        Set-Jobs "[plain]`nroot = $src`ndest = Plain`ncompress = none`n"
+        (Invoke-AB '--force').Code | Should -Be 0
+
+        $out = Join-Path $root 'out'
+        New-File (Join-Path $out 'a.txt') 'old'
+        $r = Invoke-Restore '--to', $out, 'plain'
+        $r.Code | Should -Be 0
+        $r.Text | Should -Match 'keeping files already there'
+        [IO.File]::ReadAllText((Join-Path $out 'a.txt')) | Should -Be 'old'
+        [IO.File]::ReadAllText((Join-Path $out 'b.txt')) | Should -Be 'new'
+
+        $r = Invoke-Restore '--to', $out, '--overwrite', 'plain'
+        $r.Code | Should -Be 0
+        $r.Text | Should -Match 'replacing files already there'
+        [IO.File]::ReadAllText((Join-Path $out 'a.txt')) | Should -Be 'new'
+
+        $r = Invoke-Restore '--to', (Join-Path $drive 'x'), 'plain'
+        $r.Code | Should -Not -Be 0
+        $r.Text | Should -Match "won't extract into the drive folder"
+        Test-Path (Join-Path $drive 'x') | Should -BeFalse
+    }
+
+    It 'restores every archive into its own folder with --all' {
+        New-File (Join-Path $src 'notes/a.txt')
+        New-File (Join-Path $src 'games/One/b.txt')
+        New-File (Join-Path $src 'games/Two/c.txt')
+        Set-Jobs ("[notes]`nroot = $(Join-Path $src 'notes')`ndest = Notes`ncompress = none`n" +
+            "[games]`nroot = $(Join-Path $src 'games')`ndest = Games`ncompress = none`nper_subfolder = true`n")
+        (Invoke-AB '--force').Code | Should -Be 0
+
+        (Invoke-Restore '--all', 'notes').Code | Should -Be 2
+
+        $out = Join-Path $root 'out'
+        (Invoke-Restore '--all', '--to', $out).Code | Should -Be 0
+        $dirs = @(Get-ChildItem -LiteralPath $out -Directory | ForEach-Object Name | Sort-Object)
+        $dirs.Count | Should -Be 3
+        $dirs | ForEach-Object { $_ | Should -Match '^(One|Two|notes)_T_\d{4}-\d{2}-\d{2}_\d{6}$' }
+        @(Get-Tree $out | ForEach-Object { $_ -replace '_T_[^/]+', '' } | Sort-Object) |
+            Should -Be @('notes/a.txt', 'One/b.txt', 'Two/c.txt')
+    }
+
+    It 'restores without a config, given the drive folder and machine' {
+        New-File (Join-Path $src 'a.txt')
+        Set-Jobs "[plain]`nroot = $src`ndest = Plain`ncompress = none`n"
+        (Invoke-AB '--force').Code | Should -Be 0
+        Remove-Item -LiteralPath $conf
+        $env:AUTOBACKUP_CONFIG = $conf   # so a real config in the default place isn't read
+
+        $r = Invoke-Restore '--drive', $drive, '--list'
+        $r.Code | Should -Be 0
+        $r.Text | Should -Match 'plain_T\s'
+
+        $out = Join-Path $root 'out'
+        (Invoke-Restore '--drive', $drive, '--machine', 'T', '--to', $out, 'plain').Code | Should -Be 0
+        Get-Tree $out | Should -Be @('a.txt')
+
+        $r = Invoke-Restore '--drive', $drive, '--machine', 'Other', '--to', $out, 'plain'
+        $r.Code | Should -Not -Be 0
+        $r.Text | Should -Match "No archive named 'plain'"
     }
 }
 
