@@ -635,6 +635,25 @@ function Write-FileList([string]$key, [string]$uroot, [string]$out, [string[]]$i
     return $true
 }
 
+# ---------------------------------------------------------------- change check
+
+# First path at or under ITEM modified after SINCE, or $null. REL is the path as tar sees it.
+# Skips what $script:UExc excludes, the way tar matches: a pattern matches the whole path or its
+# end, '*' also matches '/', and case counts.
+function Find-Changed($item, [string]$rel, [datetime]$since) {
+    foreach ($e in $script:UExc) {
+        $e = $e.Replace('\', '/')
+        if ($rel -clike $e -or $rel -clike "*/$e") { return $null }
+    }
+    if ($item.LastWriteTimeUtc -gt $since) { return $item.FullName }
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $null }
+    foreach ($c in @(Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction SilentlyContinue)) {
+        $h = Find-Changed $c ($rel + '/' + $c.Name) $since
+        if ($h) { return $h }
+    }
+    return $null
+}
+
 # ---------------------------------------------------------------- jobs
 
 # Uses $script:UInc (paths relative to root), $script:UExc (tar patterns) and the per-job
@@ -668,17 +687,11 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$uroot) {
         if ($descText -eq ([IO.File]::ReadAllText($stamp, $script:Utf8).TrimEnd())) {
             $since = Get-MTime $stamp
             $hit = $null
-            # Conservative: excluded and git-ignored files count too, so this can rebuild
-            # needlessly but never miss a change.
+            # Git-ignored files still count, so this can rebuild needlessly but never miss a change.
             foreach ($i in $incs) {
-                $p = Join-Path $uroot (ConvertTo-NativePath $i)
-                $item = Get-Item -LiteralPath $p -Force
-                if ($item.LastWriteTimeUtc -gt $since) { $hit = $p; break }
-                if ($item.PSIsContainer) {
-                    $h = Get-ChildItem -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue |
-                        Where-Object { $_.LastWriteTimeUtc -gt $since } | Select-Object -First 1
-                    if ($h) { $hit = $h.FullName; break }
-                }
+                $item = Get-Item -LiteralPath (Join-Path $uroot (ConvertTo-NativePath $i)) -Force
+                $hit = Find-Changed $item $i $since
+                if ($hit) { break }
             }
             if (-not $hit) {
                 Write-VLog "[$key] unchanged, skipped"

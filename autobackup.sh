@@ -691,11 +691,13 @@ archive_unit() {
     if [ "$opt_force" -eq 0 ] && [ -e "$stamp" ] \
         && [ -n "$(unit_versions "$J_DESTDIR" "$base" "$ext" "$J_KEEP")" ]; then
         if [ "$desc" = "$(cat "$stamp")" ]; then
-            local paths=() hit
-            for i in "${incs[@]}"; do paths+=("$uroot/$i"); done
-            # Conservative: excluded and git-ignored files count too, so this can rebuild
-            # needlessly but never miss a change.
-            hit=$(find "${paths[@]}" -newer "$stamp" -print -quit 2>/dev/null)
+            local prune=() hit
+            # Skip what tar excludes. find -path, like tar, lets '*' match '/'; the '*/' form
+            # matches the end of a path. Run from the unit root so paths match tar's.
+            # Git-ignored files still count, so this can rebuild needlessly but never miss a change.
+            for e in "${AB_U_EXC[@]}"; do prune+=(-path "$e" -o -path "*/$e" -o); done
+            [ ${#prune[@]} -gt 0 ] && prune=(\( "${prune[@]:0:${#prune[@]}-1}" \) -prune -o)
+            hit=$(cd "$uroot" && find "${incs[@]}" "${prune[@]}" -newer "$stamp" -print -quit 2>/dev/null)
             if [ -z "$hit" ]; then
                 vlog "[$key] unchanged, skipped"
                 return 0

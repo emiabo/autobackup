@@ -88,7 +88,7 @@ For each job in the config (or only the jobs named by `--only`):
 1. **Skip it** if disabled, if not due (`stamps/<job>.checked` is younger than `every`), or if a process in `skip_if_running` is running. Nothing is recorded, so the job retries next run.
 2. **Run `pre`** if set: `/bin/sh -c` on macOS/Linux, `Invoke-Expression` on Windows. A non-zero exit fails the job.
 3. **Build each unit.** A job is one archive, or one per subfolder with `per_subfolder = true`.
-   - **Skip if unchanged** when all of these hold: the archive exists in the drive folder; `stamps/<unit>.last` records the same settings, includes and excludes; and no file or folder under the includes is newer than that stamp.
+   - **Skip if unchanged** when all of these hold: the archive exists in the drive folder; `stamps/<unit>.last` records the same settings, includes and excludes; and no file or folder under the includes, other than excluded ones, is newer than that stamp.
    - **Otherwise build it.** If the unit contains git repos, `.gitignore` rules pick the files (below). tar writes to the staging folder, gets compressed, and is optionally cut into parts, then moved (renamed) into the drive folder.
    - The stamp is written **before** tar starts. Files that change mid-archive are therefore caught next run.
    - **Retention.** With `keep = 1`, the new archive replaces the old one. With `keep` above 1, older timestamped versions beyond `keep` (or `keep_max_size`) are deleted.
@@ -203,7 +203,7 @@ With `gitignore = false`, or when git isn't installed, units are archived withou
 
 If your home folder is itself a git repo that ignores everything by default (a `*` line in `~/.gitignore`), jobs rooted in `~` would skip every untracked file. Set `gitignore = false` on those jobs.
 
-**Change detection is conservative.** It ignores excludes and `.gitignore`. An excluded file that changes, such as a sqlite database, `workspace.json` or a `node_modules` install, can trigger a rebuild that wasn't needed. It can never cause a real change to be missed.
+**Change detection skips excluded files**, matching them the same way tar does. It doesn't read `.gitignore`, so a change to a git-ignored file (build output, a `node_modules` install inside a repo) can trigger a rebuild that wasn't needed. Creating or deleting an excluded file also counts, because it changes its parent folder's timestamp. Neither can cause a real change to be missed.
 
 ### Presets
 

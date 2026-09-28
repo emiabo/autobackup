@@ -120,6 +120,22 @@ Describe '<Impl>' -ForEach $impls {
         Get-Entries $archive | Should -Contain 'c.txt'
     }
 
+    It 'ignores changes to excluded files when checking for changes' {
+        New-File (Join-Path $src 'a.txt')
+        New-File (Join-Path $src 'skip.log')
+        New-File (Join-Path $src 'sub/cache/c.bin')
+        Set-Jobs "[plain]`nroot = $src`ndest = Plain`ncompress = none`nexclude = *.log`nexclude = sub/cache`n"
+        (Invoke-AB '--force').Code | Should -Be 0
+
+        foreach ($f in 'skip.log', 'sub/cache/c.bin') {
+            (Get-Item (Join-Path $src $f)).LastWriteTime = (Get-Date).AddMinutes(1)
+        }
+        (Invoke-AB '--only', 'plain', '--verbose').Text | Should -Match 'unchanged, skipped'
+
+        (Get-Item (Join-Path $src 'a.txt')).LastWriteTime = (Get-Date).AddMinutes(1)
+        (Invoke-AB '--only', 'plain', '--verbose').Text | Should -Match 'changed: .*a\.txt'
+    }
+
     It 'lists jobs, and a dry run writes nothing' {
         New-File (Join-Path $src 'a.txt')
         Set-Jobs "[plain]`nroot = $src`ndest = Plain`n"
