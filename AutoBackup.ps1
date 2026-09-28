@@ -70,9 +70,9 @@ if ($env:APPDATA) { $script:CfgPath = Join-Path $env:APPDATA 'AutoBackup\autobac
 else { $script:CfgPath = Join-Path $HOME '.config/autobackup/autobackup.ini' }
 if ($env:AUTOBACKUP_CONFIG) { $script:CfgPath = $env:AUTOBACKUP_CONFIG }
 $script:Template = Join-Path (Join-Path $script:Here 'templates') 'windows.ini'
-# Known folders and what to back up in them. AUTOBACKUP_RULEGROUPS points elsewhere (the tests use it).
-$script:Rulegroups = Join-Path $script:Here 'rulegroups.ini'
-if ($env:AUTOBACKUP_RULEGROUPS) { $script:Rulegroups = $env:AUTOBACKUP_RULEGROUPS }
+# Known folders and what to back up in them. -Edit copies this next to the config; see Get-RulegroupsFile.
+$script:RulegroupsShipped = Join-Path $script:Here 'rulegroups.ini'
+$script:Rulegroups = ''
 if ($env:AUTOBACKUP_TAR) {
     $script:Tar = $env:AUTOBACKUP_TAR
 } elseif ($script:IsWin) {
@@ -343,6 +343,17 @@ function Get-UnknownRulegroups([string[]]$names) {
 }
 
 # Creates the config from templates\windows.ini if it doesn't exist yet.
+# The rulegroups file to read: $env:AUTOBACKUP_RULEGROUPS (the tests use it), else the copy next
+# to the config, else the one shipped with the scripts.
+function Get-RulegroupsFile {
+    $own = Join-Path (Split-Path -Parent $script:CfgPath) 'rulegroups.ini'
+    if ($env:AUTOBACKUP_RULEGROUPS) { return $env:AUTOBACKUP_RULEGROUPS }
+    if (Test-Path -LiteralPath $own -PathType Leaf) { return $own }
+    return $script:RulegroupsShipped
+}
+
+# Creates the config from the template if it doesn't exist yet, with a copy of the shipped
+# rulegroups.ini next to it for the user to extend.
 function New-CfgFromTemplate {
     if (Test-Path -LiteralPath $script:CfgPath -PathType Leaf) { return $true }
     if (-not (Test-Path -LiteralPath $script:Template -PathType Leaf)) {
@@ -352,6 +363,11 @@ function New-CfgFromTemplate {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:CfgPath) | Out-Null
     Copy-Item -LiteralPath $script:Template -Destination $script:CfgPath
     Say "Created $script:CfgPath from $script:Template"
+    $own = Join-Path (Split-Path -Parent $script:CfgPath) 'rulegroups.ini'
+    if (-not (Test-Path -LiteralPath $own) -and (Test-Path -LiteralPath $script:RulegroupsShipped -PathType Leaf)) {
+        Copy-Item -LiteralPath $script:RulegroupsShipped -Destination $own
+        Say "Created $own from $script:RulegroupsShipped"
+    }
     return $true
 }
 
@@ -948,6 +964,7 @@ function Show-List {
     }
     Say ''
     Say "Config:     $script:CfgPath"
+    Say "Rulegroups: $script:Rulegroups"
     Say "Drive root: $script:Drive"
     Say "Log:        $(Join-Path $script:State 'autobackup.log')"
     Show-SameVolumeWarning
@@ -1150,6 +1167,7 @@ if (-not (Test-Path -LiteralPath $script:CfgPath -PathType Leaf)) {
     exit 1
 }
 
+$script:Rulegroups = Get-RulegroupsFile
 if (Test-Path -LiteralPath $script:Rulegroups -PathType Leaf) { Import-Cfg $script:Rulegroups 'rulegroup:' }
 Import-Cfg $script:CfgPath
 $script:Machine = Get-Cfg 'global' 'machine'

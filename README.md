@@ -19,7 +19,7 @@ macOS or Linux:
 
 ```sh
 git clone https://github.com/emiabo/autobackup.git ~/Code/autobackup && cd ~/Code/autobackup
-./autobackup.sh --edit       # creates ~/.config/autobackup/autobackup.ini from the template
+./autobackup.sh --edit       # creates ~/.config/autobackup/autobackup.ini and rulegroups.ini
 ./autobackup.sh --dry-run -v # check what it would write
 ./autobackup.sh --install    # hourly + at login
 ```
@@ -28,7 +28,7 @@ Windows (PowerShell 5.1 or 7):
 
 ```powershell
 git clone https://github.com/emiabo/autobackup.git $HOME\Code\autobackup; cd $HOME\Code\autobackup
-.\AutoBackup.ps1 -Edit       # creates %APPDATA%\AutoBackup\autobackup.ini from the template
+.\AutoBackup.ps1 -Edit       # creates %APPDATA%\AutoBackup\autobackup.ini and rulegroups.ini
 .\AutoBackup.ps1 -DryRun -Verbose
 .\AutoBackup.ps1 -Install    # hourly + at logon
 ```
@@ -42,7 +42,7 @@ Setting `drive_root` and `machine` is the only required edit. [SETUP.md](SETUP.m
 | `autobackup.sh` | macOS and Linux. bash 3.2+ (macOS `/bin/bash`). |
 | `AutoBackup.ps1` | Windows. Windows PowerShell 5.1 and PowerShell 7. ASCII-only. |
 | `templates/macos.ini`, `linux.ini`, `windows.ini` | Starting configs: app inventory and dotfiles jobs, plus commented-out examples. `--edit` / `-Edit` copies the right one into place. |
-| `rulegroups.ini` | Example rules for known folders (coding agents, notes, some apps and games), for jobs to reuse. See [Rulegroups](#rulegroups). |
+| `rulegroups.ini` | Example rules for known folders (coding agents, notes, some apps and games), for jobs to reuse. `--edit` / `-Edit` copies it next to your config. See [Rulegroups](#rulegroups). |
 | `restore.sh`, `Restore.ps1` | Optional. Find, verify and extract archives. See [Restoring](#restoring). |
 | `hooks/inventory.sh` | macOS/Linux app lists: `Applications.tsv`, `Brewfile`, `mas.txt`, apt/dnf/pacman/flatpak/snap lists, npm/pipx/uv/cargo globals. |
 | `hooks/Inventory.ps1` | Windows app lists: `winget.json`, `installed.csv` (Add or remove programs, from the registry), `store-apps.csv`, `scoop.json`. |
@@ -53,11 +53,12 @@ Your own config lives outside the repo, so updating the scripts never touches it
 | | macOS / Linux | Windows |
 |---|---|---|
 | Config | `~/.config/autobackup/autobackup.ini` | `%APPDATA%\AutoBackup\autobackup.ini` |
+| Rulegroups | `~/.config/autobackup/rulegroups.ini` | `%APPDATA%\AutoBackup\rulegroups.ini` |
 | Stamps, log, lock | `~/.local/state/autobackup/` | `%LOCALAPPDATA%\AutoBackup\state\` |
 | Staging (archives being built) | `~/.cache/autobackup/` | `%LOCALAPPDATA%\AutoBackup\staging\` |
 | Inventory output | `~/.local/state/autobackup/inventory/` | `%LOCALAPPDATA%\AutoBackup\inventory\` |
 
-The templates' `dotfiles` job already includes the config folder, so your job list is backed up along with everything else.
+The templates' `dotfiles` job already includes the config folder, so your job list and rulegroups are backed up along with everything else.
 
 `winget export` only includes apps it can match to a winget source, so on its own it misses anything installed some other way. That's why the Windows hook also reads the registry's uninstall keys, the same list Settings shows.
 
@@ -115,7 +116,7 @@ To force a job to be due again, delete its `.checked` stamp. To force a full reb
 | `-o JOB`, `--only JOB[,JOB]` | `-Only JOB[,JOB]` | Run just these jobs, ignoring the schedule. The unchanged check still applies. |
 | `-f`, `--force` | `-Force` | Ignore the schedule and the unchanged check. |
 | `-a [JOB] [k=v ...]`, `--add` | `-Add [JOB] [k=v ...]` | Append a job to the config. Prompts interactively when no `k=v` pairs are given, and suggests [rulegroups](#rulegroups) for known folders. |
-| `-e`, `--edit` | `-Edit` | Open the config in `$VISUAL`/`$EDITOR` (fallback: TextEdit, `xdg-open`, Notepad). Creates it from the template first. |
+| `-e`, `--edit` | `-Edit` | Open the config in `$VISUAL`/`$EDITOR` (fallback: TextEdit, `xdg-open`, Notepad). Creates it from the template first, along with a copy of `rulegroups.ini`. |
 | `--install` | `-Install` | Schedule hourly + login runs (LaunchAgent, systemd user timer, or Task Scheduler). |
 | `--uninstall` | `-Uninstall` | Remove the schedule. Config, state and archives stay. |
 | `-c FILE`, `--config FILE` | `-Config FILE` | Use another config file. `$AUTOBACKUP_CONFIG` does the same. |
@@ -207,7 +208,7 @@ If your home folder is itself a git repo that ignores everything by default (a `
 
 ### Rulegroups
 
-A rulegroup is a named set of job keys, usually the includes and excludes for one app's folder, that any job can reuse. `rulegroups.ini` (next to the scripts) holds them, in the same format as the config. A job uses one or more with `rulegroup = NAME` or `rulegroup = a, b`:
+A rulegroup is a named set of job keys, usually the includes and excludes for one app's folder, that any job can reuse. They live in `rulegroups.ini`, in the same format as the config. A job uses one or more with `rulegroup = NAME` or `rulegroup = a, b`:
 
 ```ini
 [ai-settings]
@@ -234,6 +235,8 @@ The shipped rulegroups are examples drawn from real setups, not a catalog. Names
 | `network.transmission` | Transmission settings and torrent list (macOS). |
 | `notes.obsidian` | Excludes only: workspace layout files and `.trash`. Works under any source. |
 | `utilities.alfred`, `utilities.istat-menus`, `utilities.lasso` | macOS app settings, mostly from `~/Library/Preferences`. |
+
+**Where they're read from.** `--edit` creates `rulegroups.ini` next to your config (see [Files](#files)) as a copy of the one shipped with the scripts, at the same time as the config itself. The scripts read that copy when it exists, and the shipped file otherwise. Updating the scripts never changes your copy, so rulegroups added to the shipped file later don't appear in it; copy them over if you want them. `--list` shows which file is in use.
 
 The comments in `rulegroups.ini` say what each one leaves out and why. To add your own, copy the closest section, give it a new `category.name`, and change its paths. `browsers.helium`, for example, works for any Chromium browser once its include points at that browser's profile folder.
 
@@ -358,7 +361,7 @@ For manual runs, point `--config` at a test config whose `drive_root`, `state` a
 
 - `AUTOBACKUP_NOTIFY=0` silences notifications.
 - `AUTOBACKUP_TAR` overrides the tar binary.
-- `AUTOBACKUP_RULEGROUPS` points at another rulegroups file.
+- `AUTOBACKUP_RULEGROUPS` points at another rulegroups file, in place of the one next to the config.
 
 ## Not done yet
 

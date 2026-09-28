@@ -34,7 +34,7 @@ Describe '<Impl>' -ForEach $impls {
             if ($Impl -eq 'bash') {
                 $out = & $bash (Join-Path $repo 'autobackup.sh') --config $conf @Flags 2>&1
             } else {
-                $map = @{ '--force' = '-Force'; '--dry-run' = '-DryRun'; '--list' = '-List'; '--verbose' = '-Verbose'; '--only' = '-Only'; '--add' = '-Add' }
+                $map = @{ '--force' = '-Force'; '--dry-run' = '-DryRun'; '--list' = '-List'; '--verbose' = '-Verbose'; '--only' = '-Only'; '--add' = '-Add'; '--install' = '-Install' }
                 $psFlags = @($Flags | ForEach-Object { if ($map.ContainsKey($_)) { $map[$_] } else { $_ } })
                 $out = & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'AutoBackup.ps1') -Config $conf @psFlags 2>&1
             }
@@ -267,13 +267,12 @@ Describe '<Impl>' -ForEach $impls {
         (Invoke-AB '--list').Text | Should -Match 'old\s.*\sstale'
     }
 
-    It 'takes source, includes and settings from a rulegroup, with job keys winning' {
+    It 'takes source, includes and settings from a rulegroup next to the config, with job keys winning' {
         New-File (Join-Path $src 'keep/a.txt')
         New-File (Join-Path $src 'keep/b.log')
         New-File (Join-Path $src 'keep/c.tmp')
         New-File (Join-Path $src 'other.txt')
         [IO.File]::WriteAllText($rulegroups, "[tool]`nsource = $src`ninclude = keep`nexclude = *.log`ncompress = gzip`nevery = 7d`n")
-        $env:AUTOBACKUP_RULEGROUPS = $rulegroups
         Set-Jobs "[mytool]`nrulegroup = tool`ndest = Tools`ncompress = none`nexclude = *.tmp`n"
 
         (Invoke-AB '--force').Code | Should -Be 0
@@ -306,6 +305,13 @@ Describe '<Impl>' -ForEach $impls {
         $r = Invoke-AB '--list'
         $r.Code | Should -Be 0
         $r.Text | Should -Not -Match 'WARN'
+    }
+
+    It 'creates the config with a copy of the shipped rulegroups.ini next to it' {
+        $r = Invoke-AB '--install'
+        $r.Code | Should -Be 1
+        Test-Path $conf | Should -BeTrue
+        [IO.File]::ReadAllText($rulegroups) | Should -Be ([IO.File]::ReadAllText((Join-Path $repo 'rulegroups.ini')))
     }
 
     It 'adds a job that uses a rulegroup without asking for its source' {

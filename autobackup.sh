@@ -14,8 +14,9 @@ AB_SELF="$AB_HERE/$(basename "$0")"
 AB_OS=$(uname -s)
 if [ "$AB_OS" = Darwin ]; then AB_PLATFORM=macos; else AB_PLATFORM=linux; fi
 AB_CONFIG="${AUTOBACKUP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/autobackup/autobackup.ini}"
-# Known folders and what to back up in them. AUTOBACKUP_RULEGROUPS points elsewhere (the tests use it).
-AB_RULEGROUPS="${AUTOBACKUP_RULEGROUPS:-$AB_HERE/rulegroups.ini}"
+# Known folders and what to back up in them. --edit copies this next to the config; see rulegroups_file.
+AB_RULEGROUPS_SHIPPED="$AB_HERE/rulegroups.ini"
+AB_RULEGROUPS=''
 # macOS ships bsdtar. On Linux, bsdtar (package libarchive-tools) is preferred so behavior matches
 # macOS and Windows exactly; GNU tar works too.
 if [ -n "$AUTOBACKUP_TAR" ]; then AB_TAR="$AUTOBACKUP_TAR"
@@ -340,13 +341,29 @@ unknown_rulegroups() {
     done
 }
 
-# Creates the config from templates/<platform>.ini if it doesn't exist yet.
+# The rulegroups file to read: $AUTOBACKUP_RULEGROUPS (the tests use it), else the copy next to
+# the config, else the one shipped with the scripts.
+rulegroups_file() {
+    local own
+    own="$(dirname "$AB_CONFIG")/rulegroups.ini"
+    if [ -n "$AUTOBACKUP_RULEGROUPS" ]; then printf '%s\n' "$AUTOBACKUP_RULEGROUPS"
+    elif [ -f "$own" ]; then printf '%s\n' "$own"
+    else printf '%s\n' "$AB_RULEGROUPS_SHIPPED"; fi
+}
+
+# Creates the config from templates/<platform>.ini if it doesn't exist yet, with a copy of the
+# shipped rulegroups.ini next to it for the user to extend.
 cfg_create() {
-    local tpl="$AB_HERE/templates/$AB_PLATFORM.ini"
+    local tpl="$AB_HERE/templates/$AB_PLATFORM.ini" own
     [ -f "$AB_CONFIG" ] && return 0
     [ -f "$tpl" ] || { echo "Config not found: $AB_CONFIG (and no template at $tpl)" >&2; return 1; }
     mkdir -p "$(dirname "$AB_CONFIG")" && cp "$tpl" "$AB_CONFIG" || return 1
     echo "Created $AB_CONFIG from $tpl"
+    own="$(dirname "$AB_CONFIG")/rulegroups.ini"
+    if [ ! -f "$own" ] && [ -f "$AB_RULEGROUPS_SHIPPED" ]; then
+        cp "$AB_RULEGROUPS_SHIPPED" "$own" || return 1
+        echo "Created $own from $AB_RULEGROUPS_SHIPPED"
+    fi
 }
 
 # ---------------------------------------------------------------- state
@@ -955,6 +972,7 @@ cmd_list() {
     done < <(cfg_jobs)
     echo
     echo "Config:     $AB_CONFIG"
+    echo "Rulegroups: $AB_RULEGROUPS"
     echo "Drive root: $AB_DRIVE"
     echo "Log:        $AB_STATE/autobackup.log"
     same_volume_warning
@@ -1244,6 +1262,7 @@ if [ ! -f "$AB_CONFIG" ]; then
     exit 1
 fi
 
+AB_RULEGROUPS=$(rulegroups_file)
 [ -f "$AB_RULEGROUPS" ] && cfg_load "$AB_RULEGROUPS" rulegroup:
 cfg_load "$AB_CONFIG"
 AB_MACHINE=$(cfg_get global machine)
