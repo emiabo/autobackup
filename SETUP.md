@@ -73,7 +73,7 @@ A launchd job doesn't inherit your terminal's permissions. If a scheduled run lo
 From a launcher like Alfred or Raycast, or a shell alias:
 
 ```sh
-~/Code/autobackup/autobackup.sh --only obsidian
+~/Code/autobackup/autobackup.sh --only dotfiles
 ```
 
 `--only` ignores the schedule but still skips the upload when nothing changed. Add `--force` to always rebuild.

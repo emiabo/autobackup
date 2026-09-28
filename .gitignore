@@ -1,7 +1,7 @@
 # Personal job configs. Start from templates/ and keep your own copy out of the repo.
 /*.conf
 /*.ini
-!/presets.ini
+!/rulegroups.ini
 
 .DS_Store
 Thumbs.db
