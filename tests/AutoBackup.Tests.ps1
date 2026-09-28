@@ -353,25 +353,48 @@ Describe '<Impl>' -ForEach $impls {
         $r.Text | Should -Match 'One_T\.tar\.gz\.002 is missing'
     }
 
-    It 'refuses a non-empty target without --overwrite, and the drive folder always' {
+    It 'adds only missing files unless --overwrite, and refuses the drive folder' {
         New-File (Join-Path $src 'a.txt') 'new'
+        New-File (Join-Path $src 'b.txt') 'new'
         Set-Jobs "[plain]`nroot = $src`ndest = Plain`ncompress = none`n"
         (Invoke-AB '--force').Code | Should -Be 0
 
         $out = Join-Path $root 'out'
         New-File (Join-Path $out 'a.txt') 'old'
         $r = Invoke-Restore '--to', $out, 'plain'
-        $r.Code | Should -Not -Be 0
-        $r.Text | Should -Match 'is not empty'
+        $r.Code | Should -Be 0
+        $r.Text | Should -Match 'keeping files already there'
         [IO.File]::ReadAllText((Join-Path $out 'a.txt')) | Should -Be 'old'
+        [IO.File]::ReadAllText((Join-Path $out 'b.txt')) | Should -Be 'new'
 
-        (Invoke-Restore '--to', $out, '--overwrite', 'plain').Code | Should -Be 0
+        $r = Invoke-Restore '--to', $out, '--overwrite', 'plain'
+        $r.Code | Should -Be 0
+        $r.Text | Should -Match 'replacing files already there'
         [IO.File]::ReadAllText((Join-Path $out 'a.txt')) | Should -Be 'new'
 
         $r = Invoke-Restore '--to', (Join-Path $drive 'x'), 'plain'
         $r.Code | Should -Not -Be 0
         $r.Text | Should -Match "won't extract into the drive folder"
         Test-Path (Join-Path $drive 'x') | Should -BeFalse
+    }
+
+    It 'restores every archive into its own folder with --all' {
+        New-File (Join-Path $src 'notes/a.txt')
+        New-File (Join-Path $src 'games/One/b.txt')
+        New-File (Join-Path $src 'games/Two/c.txt')
+        Set-Jobs ("[notes]`nroot = $(Join-Path $src 'notes')`ndest = Notes`ncompress = none`n" +
+            "[games]`nroot = $(Join-Path $src 'games')`ndest = Games`ncompress = none`nper_subfolder = true`n")
+        (Invoke-AB '--force').Code | Should -Be 0
+
+        (Invoke-Restore '--all', 'notes').Code | Should -Be 2
+
+        $out = Join-Path $root 'out'
+        (Invoke-Restore '--all', '--to', $out).Code | Should -Be 0
+        $dirs = @(Get-ChildItem -LiteralPath $out -Directory | ForEach-Object Name | Sort-Object)
+        $dirs.Count | Should -Be 3
+        $dirs | ForEach-Object { $_ | Should -Match '^(One|Two|notes)_T_\d{4}-\d{2}-\d{2}_\d{6}$' }
+        @(Get-Tree $out | ForEach-Object { $_ -replace '_T_[^/]+', '' } | Sort-Object) |
+            Should -Be @('notes/a.txt', 'One/b.txt', 'Two/c.txt')
     }
 
     It 'restores without a config, given the drive folder and machine' {

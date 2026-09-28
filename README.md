@@ -260,12 +260,13 @@ Put `drive_root` inside an encrypted folder that syncs as ciphertext, such as a 
 
 ## Restoring
 
-Every archive opens with ordinary tools, so the restore scripts are optional. They find the newest version, join chunked parts, pick the decompressor, and extract into a scratch folder, so nothing live is overwritten.
+Every archive opens with ordinary tools, so the restore scripts are optional. They find the newest version, join chunked parts, pick the decompressor, and extract into a scratch folder. Files that already exist are never replaced unless you ask.
 
 ```sh
 ./restore.sh --list                  # archives for this machine: newest version, count, size
 ./restore.sh dotfiles                # newest version -> ~/autobackup-restore/dotfiles_MyMac_<time>/
 ./restore.sh --at 2026-09-01 notes   # newest version from that day or earlier (keep > 1)
+./restore.sh --all                   # every archive, each into its own folder
 ./restore.sh --verify                # read every newest archive to the end; extract nothing
 ```
 
@@ -276,7 +277,8 @@ Every archive opens with ordinary tools, so the restore scripts are optional. Th
 
 - **Names.** Use the job name, or the subfolder name for `per_subfolder` jobs. A path to an archive file (or its `.001` part) works too. `--list NAME` shows every version.
 - **Where files go.** By default, each archive gets a new folder under `~/autobackup-restore`. `--to DIR` extracts into `DIR` instead. Paths in an archive are relative to its job's `root`, so `--to ~` puts a job rooted at `~` back in place.
-- **Safety.** A folder that isn't empty is refused unless you add `--overwrite`, which replaces existing files. The drive folder is always refused, since the sync app would upload the extracted files.
+- **Everything at once.** `--all` restores the newest version (or the newest up to `--at`) of every archive for the machine. Jobs have different roots, so each archive always gets its own folder; with `--all`, `--to DIR` is the folder that holds them.
+- **Existing files are kept.** Only files missing from the target are extracted, so a restore never loses data that's already there. `--overwrite` replaces existing files with the archive's copy, for example to bring back an older version of a config file. The drive folder is always refused, since the sync app would upload the extracted files.
 - **On a new machine.** Only `drive_root` and `machine` come from the config. Without one, pass them: `./restore.sh --drive ~/Dropbox/AutoBackup --machine MyMac dotfiles`. `--machine '*'` matches any machine.
 - **Checks.** `--verify` reads each archive through the decompressor and tar, catching missing parts and damaged files. `--dry-run` shows what would be extracted where.
 - **Needs.** zstd archives need the `zstd` CLI, or a tar with built-in zstd (bsdtar with libzstd, Windows' `tar.exe` on recent builds). The Windows script joins parts and decompresses into temp files before extracting, like `AutoBackup.ps1` builds archives in two steps.

@@ -18,14 +18,19 @@
   .\Restore.ps1 dotfiles
 .EXAMPLE
   .\Restore.ps1 -Drive "$HOME\OneDrive\AutoBackup" -Machine MyPC -To ~ -Overwrite dotfiles
+.EXAMPLE
+  .\Restore.ps1 -All -To D:\restore
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
     # List archives instead of extracting. With names, list every version.
     [switch]$List,
-    # Extract into this folder (default: a new folder per archive under ~\autobackup-restore)
+    # Restore the newest version of every archive for this machine, each into its own folder
+    [switch]$All,
+    # Extract into this folder (default: a new folder per archive under ~\autobackup-restore).
+    # With -All, it holds one folder per archive instead.
     [string]$To,
-    # Allow extracting into a folder that isn't empty. Existing files are replaced.
+    # Replace files that already exist with the archive's copy. Without it, only missing files are added.
     [switch]$Overwrite,
     # Newest version from this time or earlier: 2026-09-27 or 2026-09-27_1305
     [string]$At,
@@ -57,6 +62,8 @@ $script:DriveDir = ''
 $script:ToDir = ''
 $script:Versions = @()
 $script:TarZstd = $null
+$script:TarGnu = $null
+$script:OptAll = [bool]$All
 $script:OptVerify = [bool]$Verify
 $script:OptOverwrite = [bool]$Overwrite
 $script:OptDry = [bool]$DryRun
@@ -80,18 +87,23 @@ if ($env:AUTOBACKUP_TAR) {
 
 function Show-Usage {
     Say @'
-Usage: Restore.ps1 [options] [NAME ...]
+Usage: Restore.ps1 [options] NAME ...
+       Restore.ps1 [options] -All
 
 Finds the newest version of each named archive in the AutoBackup drive folder and extracts it.
 NAME is a job name, or a subfolder name for per_subfolder jobs: the part of the archive's file
 name before _<machine>. It can also be the path to an archive file, or to its .001 part.
+Files that already exist are kept; only missing files are added, unless -Overwrite.
 
 Options:
   -List               List archives instead of extracting. With NAMEs, list every version.
+  -All                Restore the newest version of every archive for this machine, each into
+                      its own folder
   -To DIR             Extract into DIR. Default: a new folder per archive under
                       ~\autobackup-restore. Paths inside an archive are relative to its job's root,
                       so -To ~ puts files from a job rooted at ~ back where they were.
-  -Overwrite          Allow extracting into a folder that isn't empty. Existing files are replaced.
+                      With -All, DIR holds one folder per archive instead.
+  -Overwrite          Replace files that already exist with the archive's copy
   -At WHEN            Newest version from WHEN or earlier: 2026-09-27 or 2026-09-27_1305
   -Verify             Read each archive to the end to check it's intact; extract nothing.
                       With no NAMEs, checks the newest version of every archive.
@@ -106,6 +118,7 @@ Examples:
   .\Restore.ps1 -List
   .\Restore.ps1 dotfiles
   .\Restore.ps1 -At 2026-09-01 obsidian
+  .\Restore.ps1 -All -To D:\restore
   .\Restore.ps1 -Drive "$HOME\OneDrive\AutoBackup" -Machine MyPC -To ~ -Overwrite dotfiles
 '@
 }
@@ -153,6 +166,16 @@ function Test-TarZstd {
         $script:TarZstd = ($v -match 'zstd')
     }
     return $script:TarZstd
+}
+
+# tar's flag to leave existing files alone. GNU tar's own -k fails on each one instead.
+function Get-TarKeepFlag {
+    if ($null -eq $script:TarGnu) {
+        $v = @(& $script:Tar --version 2>$null)
+        $script:TarGnu = ($v.Count -gt 0 -and "$($v[0])" -match 'GNU tar')
+    }
+    if ($script:TarGnu) { return '--skip-old-files' }
+    return '-k'
 }
 
 # Last value of KEY in [global] (or before any section) of the config.
@@ -338,7 +361,7 @@ function Invoke-RestoreOne([string]$r) {
         return $false
     }
 
-    if ($script:ToDir) { $dir = $script:ToDir } else { $dir = Join-Path (Join-Path $HOME 'autobackup-restore') ($base + '_' + $stamp) }
+    if ($script:ToDir -and -not $script:OptAll) { $dir = $script:ToDir } else { $dir = Join-Path $script:Parent ($base + '_' + $stamp) }
     $dir = Get-FullPath $dir
     $cmp = [StringComparison]::Ordinal
     if ($script:IsWin) { $cmp = [StringComparison]::OrdinalIgnoreCase }
@@ -346,15 +369,20 @@ function Invoke-RestoreOne([string]$r) {
         Warn "$($desc): won't extract into the drive folder ($dir); the sync app would upload it"
         return $false
     }
-    if (-not $script:OptOverwrite -and (Test-Path -LiteralPath $dir -PathType Container) -and
-        @(Get-ChildItem -LiteralPath $dir -Force | Select-Object -First 1).Count -gt 0) {
-        Warn "$($desc): $dir is not empty. Pick another -To, or add -Overwrite to replace files there."
-        return $false
+    $xargs = @('-x', '-C', $dir)
+    if ($script:OptOverwrite) {
+        $how = ' (replacing files already there)'
+    } else {
+        $xargs += Get-TarKeepFlag
+        $how = ' (keeping files already there)'
     }
-    if ($script:OptDry) { Say "Would restore $desc into $dir"; return $true }
-    Say "Restoring $desc into $dir"
+    # Only worth saying when there's something there.
+    if (-not ((Test-Path -LiteralPath $dir -PathType Container) -and
+            @(Get-ChildItem -LiteralPath $dir -Force | Select-Object -First 1).Count -gt 0)) { $how = '' }
+    if ($script:OptDry) { Say "Would restore $desc into $dir$how"; return $true }
+    Say "Restoring $desc into $dir$how"
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    if (-not (Invoke-Unpack $ext $files @('-x', '-C', $dir))) {
+    if (-not (Invoke-Unpack $ext $files $xargs)) {
         Warn "Extracting $v failed; $dir may be incomplete."
         return $false
     }
@@ -403,6 +431,13 @@ if ($bad.Count -gt 0) {
 }
 if ($Config) { $script:CfgPath = Expand-Path $Config }
 if ($To) { $script:ToDir = Expand-Path $To }
+if ($All -and $Names.Count -gt 0) {
+    Warn 'Use -All or NAMEs, not both.'
+    exit 2
+}
+# Where per-archive folders go: ~\autobackup-restore, or -To with -All.
+$script:Parent = Join-Path $HOME 'autobackup-restore'
+if ($All -and $script:ToDir) { $script:Parent = Get-FullPath $script:ToDir }
 
 $script:AtLimit = $null
 if ($At) {
@@ -446,7 +481,7 @@ $script:DriveDir = (Get-FullPath (Get-Item -LiteralPath $script:DriveDir -Force)
 
 $showList = [bool]$List
 $failAfterList = $false
-if ($Names.Count -eq 0 -and -not $List -and -not $Verify) {
+if ($Names.Count -eq 0 -and -not $List -and -not $Verify -and -not $All) {
     Warn 'Name what to restore. Available archives:'
     $showList = $true
     $failAfterList = $true
@@ -505,7 +540,8 @@ if ($showList) {
     exit 0
 }
 
-# -Verify with no NAMEs: the newest version of every archive for this machine.
+# -All, or -Verify with no NAMEs: the newest version of every archive for this machine.
+# With -At, archives that didn't exist yet are left out.
 if ($picked.Count -eq 0) {
     foreach ($b in (Get-AllBases)) {
         if ($b -notlike ('*_' + $script:MPat)) { continue }
@@ -523,7 +559,7 @@ if ($nfail -gt 0) {
     Warn "$nfail of $($picked.Count) failed."
     exit 1
 }
-if (-not $Verify -and -not $DryRun -and -not $script:ToDir) {
-    Say "Done. Nothing in place was changed: copy back what you need from $(Join-Path $HOME 'autobackup-restore')."
+if (-not $Verify -and -not $DryRun -and (-not $script:ToDir -or $All)) {
+    Say "Done. Nothing in place was changed: copy back what you need from $script:Parent."
 }
 exit 0

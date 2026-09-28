@@ -17,6 +17,7 @@ elif [ "$AB_OS" = Darwin ]; then AB_TAR=/usr/bin/tar
 else AB_TAR=$(command -v bsdtar || command -v tar); fi
 AB_SEP=$'\x1f'
 AB_TAR_ZSTD=''
+AB_TAR_GNU=''
 AB_MACHINE=''
 AB_MPAT=''
 AB_DRIVE=''
@@ -29,6 +30,7 @@ opt_list=0
 opt_verify=0
 opt_dry=0
 opt_overwrite=0
+opt_all=0
 opt_to=''
 opt_at=''
 fail_after_list=''
@@ -44,18 +46,23 @@ export PATH
 
 usage() {
     cat <<EOF
-Usage: restore.sh [options] [NAME ...]
+Usage: restore.sh [options] NAME ...
+       restore.sh [options] --all
 
 Finds the newest version of each named archive in the AutoBackup drive folder and extracts it.
 NAME is a job name, or a subfolder name for per_subfolder jobs: the part of the archive's file
 name before _<machine>. It can also be the path to an archive file, or to its .001 part.
+Files that already exist are kept; only missing files are added, unless --overwrite.
 
 Options:
   -l, --list          List archives instead of extracting. With NAMEs, list every version.
+      --all           Restore the newest version of every archive for this machine, each into
+                      its own folder
   -t, --to DIR        Extract into DIR. Default: a new folder per archive under
                       ~/autobackup-restore. Paths inside an archive are relative to its job's root,
                       so --to ~ puts files from a job rooted at ~ back where they were.
-      --overwrite     Allow extracting into a folder that isn't empty. Existing files are replaced.
+                      With --all, DIR holds one folder per archive instead.
+      --overwrite     Replace files that already exist with the archive's copy
   -a, --at WHEN       Newest version from WHEN or earlier: 2026-09-27 or 2026-09-27_1305
       --verify        Read each archive to the end to check it's intact; extract nothing.
                       With no NAMEs, checks the newest version of every archive.
@@ -70,6 +77,7 @@ Examples:
   restore.sh --list
   restore.sh dotfiles
   restore.sh --at 2026-09-01 obsidian
+  restore.sh --all --to /Volumes/Spare/restore
   restore.sh --drive ~/Dropbox/AutoBackup --machine MyMac --to ~ --overwrite dotfiles
 EOF
 }
@@ -154,6 +162,14 @@ tar_has_zstd() {
         if "$AB_TAR" --version 2>/dev/null | grep -q zstd; then AB_TAR_ZSTD=1; else AB_TAR_ZSTD=0; fi
     fi
     [ "$AB_TAR_ZSTD" -eq 1 ]
+}
+
+# tar's flag to leave existing files alone. GNU tar's own -k fails on each one instead.
+tar_keep_flag() {
+    if [ -z "$AB_TAR_GNU" ]; then
+        if "$AB_TAR" --version 2>/dev/null | head -n 1 | grep -q 'GNU tar'; then AB_TAR_GNU=1; else AB_TAR_GNU=0; fi
+    fi
+    if [ "$AB_TAR_GNU" -eq 1 ]; then echo --skip-old-files; else echo -k; fi
 }
 
 # Last value of KEY in [global] (or before any section) of the config.
@@ -301,7 +317,7 @@ unpack() {
 
 # One archive version: verify it, or extract it. Returns 1 on failure.
 restore_one() {
-    local r="$1" base stamp v n ext why desc dir
+    local r="$1" base stamp v n ext why desc dir how='' xargs
     base=$(rec_base "$r"); stamp=$(rec_stamp "$r"); v=$(rec_path "$r")
     n=$(basename "$v"); [[ $n =~ $AB_ARCHIVE_RE ]]; ext="${BASH_REMATCH[2]}"
     version_files "$v" || return 1
@@ -318,19 +334,24 @@ restore_one() {
         return 1
     fi
 
-    if [ -n "$opt_to" ]; then dir="$opt_to"; else dir="$HOME/autobackup-restore/${base}_$stamp"; fi
+    if [ -n "$opt_to" ] && [ $opt_all -eq 0 ]; then dir="$opt_to"; else dir="$AB_PARENT/${base}_$stamp"; fi
     dir=$(abs_path "$dir")
     case "$dir/" in
         "$AB_DRIVE"/*) echo "$desc: won't extract into the drive folder ($dir); the sync app would upload it" >&2; return 1 ;;
     esac
-    if [ $opt_overwrite -eq 0 ] && [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
-        echo "$desc: $dir is not empty. Pick another --to, or add --overwrite to replace files there." >&2
-        return 1
+    xargs=(-x -C "$dir")
+    if [ $opt_overwrite -eq 1 ]; then
+        how=' (replacing files already there)'
+    else
+        xargs+=("$(tar_keep_flag)")
+        how=' (keeping files already there)'
     fi
-    if [ $opt_dry -eq 1 ]; then echo "Would restore $desc into $dir"; return 0; fi
-    echo "Restoring $desc into $dir"
+    # Only worth saying when there's something there.
+    [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ] || how=''
+    if [ $opt_dry -eq 1 ]; then echo "Would restore $desc into $dir$how"; return 0; fi
+    echo "Restoring $desc into $dir$how"
     mkdir -p "$dir" || return 1
-    if ! unpack "$ext" -x -C "$dir"; then
+    if ! unpack "$ext" "${xargs[@]}"; then
         echo "Extracting $v failed; $dir may be incomplete." >&2
         return 1
     fi
@@ -391,6 +412,7 @@ while [ $# -gt 0 ]; do
         -l|--list) opt_list=1 ;;
         --verify) opt_verify=1 ;;
         --overwrite) opt_overwrite=1 ;;
+        --all) opt_all=1 ;;
         -n|--dry-run) opt_dry=1 ;;
         -h|--help) usage; exit 0 ;;
         --) shift; names+=("$@"); break ;;
@@ -401,6 +423,12 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$cfg_flag" ] && AB_CONFIG=$(expand_path "$cfg_flag")
 [ -n "$opt_to" ] && opt_to=$(expand_path "$opt_to")
+if [ $opt_all -eq 1 ] && [ ${#names[@]} -gt 0 ]; then
+    echo "Use --all or NAMEs, not both." >&2; exit 2
+fi
+# Where per-archive folders go: ~/autobackup-restore, or --to with --all.
+AB_PARENT="$HOME/autobackup-restore"
+[ $opt_all -eq 1 ] && [ -n "$opt_to" ] && AB_PARENT=$(abs_path "$opt_to")
 
 if [ -n "$opt_at" ]; then
     if ! printf '%s\n' "$opt_at" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}(_[0-9]{2}([0-9]{2}([0-9]{2})?)?)?$'; then
@@ -432,7 +460,7 @@ fi
 [ -d "$AB_DRIVE" ] || die "AutoBackup folder not found: $AB_DRIVE"
 AB_DRIVE=$(cd "$AB_DRIVE" && pwd -P)
 
-if [ ${#names[@]} -eq 0 ] && [ $opt_list -eq 0 ] && [ $opt_verify -eq 0 ]; then
+if [ ${#names[@]} -eq 0 ] && [ $opt_list -eq 0 ] && [ $opt_verify -eq 0 ] && [ $opt_all -eq 0 ]; then
     echo "Name what to restore. Available archives:" >&2
     opt_list=1
     exec >&2
@@ -483,7 +511,8 @@ if [ $opt_list -eq 1 ]; then
     exit 0
 fi
 
-# --verify with no NAMEs: the newest version of every archive for this machine.
+# --all, or --verify with no NAMEs: the newest version of every archive for this machine.
+# With --at, archives that didn't exist yet are left out.
 if [ ${#picked[@]} -eq 0 ]; then
     while IFS= read -r b; do
         # shellcheck disable=SC2254  # AB_MPAT is a glob pattern on purpose
@@ -500,7 +529,7 @@ if [ $failed -gt 0 ]; then
     echo "$failed of ${#picked[@]} failed." >&2
     exit 1
 fi
-if [ $opt_verify -eq 0 ] && [ $opt_dry -eq 0 ] && [ -z "$opt_to" ]; then
-    echo "Done. Nothing in place was changed: copy back what you need from $HOME/autobackup-restore."
+if [ $opt_verify -eq 0 ] && [ $opt_dry -eq 0 ] && { [ -z "$opt_to" ] || [ $opt_all -eq 1 ]; }; then
+    echo "Done. Nothing in place was changed: copy back what you need from $AB_PARENT."
 fi
 exit 0
