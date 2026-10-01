@@ -949,7 +949,7 @@ check_alerts() {
     if [ -e "$n" ] && [ "$(mtime "$n")" -gt "$last" ]; then last=$(mtime "$n"); fi
     if [ $((now - last)) -ge "$secs" ]; then
         log INFO "review reminder: check the job list still matches what you need backed up"
-        notify "Time to review your backup list: autobackup.sh --list, then --edit."
+        notify "Have you reviewed your backup list lately? Run autobackup.sh --list, then --edit."
         touch "$n"
     fi
 }

@@ -942,7 +942,7 @@ function Invoke-Alerts {
     if ((Test-Path -LiteralPath $n) -and (Get-MTime $n) -gt $last) { $last = Get-MTime $n }
     if (([DateTime]::UtcNow - $last).TotalSeconds -ge $secs) {
         Write-Log 'INFO' 'review reminder: check the job list still matches what you need backed up'
-        Send-Notify 'Time to review your backup list: AutoBackup.ps1 -List, then -Edit.'
+        Send-Notify 'Have you reviewed your backup list lately? Run AutoBackup.ps1 -List, then -Edit.'
         Set-Stamp $n
     }
 }
