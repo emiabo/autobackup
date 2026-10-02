@@ -1,12 +1,19 @@
 # Lint, then run tests/AutoBackup.Tests.ps1 on each platform. Free on public repos (standard runners).
 name: test
 
+# Pushes run CI only on main; other branches are covered by their pull request, so they don't run twice.
 on:
   push:
+    branches: [main]
     paths-ignore: ['**.md']
   pull_request:
     paths-ignore: ['**.md']
   workflow_dispatch:
+
+# A new push to a pull request cancels its run that's still going.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
