@@ -167,6 +167,7 @@ Describe '<Impl>' -ForEach $impls {
         $r = Invoke-AB '--force'
         $r.Code | Should -Not -Be 0
         $r.Text | Should -Match 'share the name Games[\\/]My-World_T'
+        $r.Text | Should -Not -Match 'archiving failed'
         Get-DriveFiles 'Games' | Should -Be @(@("${kana}_T.tar", "${world}_T.tar", 'ok_T.tar') | Sort-Object)
         (Invoke-AB '--list').Text | Should -Match 'games\s.*\sfailed'
     }

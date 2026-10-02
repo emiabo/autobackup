@@ -469,8 +469,16 @@ function Get-MethodExt([string]$method) {
 }
 
 # Two-step tar-then-zstd on purpose: piping tar into zstd on Windows can hang on large inputs.
+# tar runs from inside $src rather than with -C $src: tar.exe reads its arguments in the ANSI code
+# page, which can't hold every folder name, but it inherits the working folder intact.
 function Invoke-BuildArchive([string]$method, [string]$level, [string]$out, [string]$src, [string[]]$rest, [string]$key) {
-    $base = @('-c', '-C', $src)
+    Push-Location -LiteralPath $src
+    try { return (Invoke-BuildArchiveHere $method $level $out $rest $key) }
+    finally { Pop-Location }
+}
+
+function Invoke-BuildArchiveHere([string]$method, [string]$level, [string]$out, [string[]]$rest, [string]$key) {
+    $base = @('-c')
     switch ($method) {
         'zstd-ext' {
             $raw = "$out.part.tar"
