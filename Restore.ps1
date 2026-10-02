@@ -127,7 +127,8 @@ function Say([string]$s) { [Console]::Out.WriteLine($s) }
 
 function Warn([string]$s) { [Console]::Error.WriteLine($s) }
 
-function Get-Sanitized([string]$s) { return ($s -replace '[^A-Za-z0-9._-]+', '-').Trim('-') }
+# Same as Get-Sanitized in AutoBackup.ps1.
+function Get-Sanitized([string]$s) { return ($s -replace '[\x00-\x7F-[A-Za-z0-9._-]]+', '-').Trim('-') }
 
 function Get-Unquoted([string]$v) {
     if ($v -match '^"(.*)"$' -or $v -match "^'(.*)'$") { return $Matches[1] }

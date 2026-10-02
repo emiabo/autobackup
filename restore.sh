@@ -101,8 +101,10 @@ unquote() {
     esac
 }
 
+# Same as sanitize in autobackup.sh.
+AB_NONASCII="$(printf '\200')-$(printf '\377')"
 sanitize() {
-    printf '%s\n' "$1" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//'
+    printf '%s\n' "$1" | LC_ALL=C sed -E "s/[^A-Za-z0-9._${AB_NONASCII}-]+/-/g; s/^-+//; s/-+\$//"
 }
 
 glob_escape() {

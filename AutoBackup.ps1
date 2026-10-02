@@ -138,7 +138,9 @@ function Say([string]$s) { [Console]::Out.WriteLine($s) }
 
 function Test-True([string]$v) { return ("$v".Trim() -match '^(?i)(1|y|yes|true|on)$') }
 
-function Get-Sanitized([string]$s) { return ($s -replace '[^A-Za-z0-9._-]+', '-').Trim('-') }
+# Name for archives and copied files: ASCII other than letters, digits and . _ - becomes -, so
+# names stay valid on every platform. Non-ASCII characters (accents, other scripts) are kept.
+function Get-Sanitized([string]$s) { return ($s -replace '[\x00-\x7F-[A-Za-z0-9._-]]+', '-').Trim('-') }
 
 # ~ at the start, %ENVVARS%, {here} (this script's folder) and {machine} are expanded.
 function Expand-Value([string]$p) {
@@ -361,8 +363,13 @@ function New-CfgFromTemplate {
         return $false
     }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:CfgPath) | Out-Null
-    Copy-Item -LiteralPath $script:Template -Destination $script:CfgPath
+    # Each computer needs its own machine name, or two of them overwrite each other's archives.
+    $machine = Get-Sanitized ([Environment]::MachineName -replace '\..*$', '')
+    $text = [IO.File]::ReadAllText($script:Template)
+    if ($machine) { $text = $text -replace '(?m)^machine = [^\r\n]*', "machine = $machine" }
+    [IO.File]::WriteAllText($script:CfgPath, $text)
     Say "Created $script:CfgPath from $script:Template"
+    if ($machine) { Say "Set machine = $machine" }
     $own = Join-Path (Split-Path -Parent $script:CfgPath) 'rulegroups.ini'
     if (-not (Test-Path -LiteralPath $own) -and (Test-Path -LiteralPath $script:RulegroupsShipped -PathType Leaf)) {
         Copy-Item -LiteralPath $script:RulegroupsShipped -Destination $own
@@ -678,6 +685,7 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$usrc) {
     $J = $script:J
     $base = (Get-Sanitized $uname) + '_' + $script:Machine
     $ext = Get-MethodExt $J.Method
+    if (Test-UnitClash $key (Join-Path $J.DestDir $base)) { return $false }
     $stampDir = Join-Path $script:State 'stamps'
     $stamp = Join-Path $stampDir "$key.last"
 
@@ -688,8 +696,8 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$usrc) {
         else { Write-VLog "[$key] include not found, skipped: $i" }
     }
     if ($incs.Count -eq 0) {
-        Write-Log 'WARN' "[$key] nothing to archive under $usrc"
-        return $true
+        Write-Log 'ERROR' "[$key] nothing to archive: none of the includes exist under $usrc"
+        return $false
     }
 
     # The descriptor records what produced the archive; editing the job forces a rebuild.
@@ -731,10 +739,13 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$usrc) {
     catch { Write-Log 'ERROR' "[$key] cannot create $($J.DestDir)"; return $false }
     $pending = Join-Path $stampDir "$key.pending"
     [IO.File]::WriteAllText($pending, $descText + "`n", $script:Utf8)
-    $tmp = Join-Path $script:Staging $fname
-    $listf = Join-Path $script:Staging "$key.list"
+    # Staging names stay ASCII: tar.exe and zstd.exe read their arguments in the ANSI code page,
+    # which can't hold every character an archive name can. The move into the drive folder renames.
+    $sname = Get-StagingName $key
+    $tmp = Join-Path $script:Staging ($sname + $ext)
+    $listf = Join-Path $script:Staging "$sname.list"
     Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-    Get-ChildItem -LiteralPath $script:Staging -Filter "$fname.*" -Force | Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath $script:Staging -Filter "$sname$ext.*" -Force | Remove-Item -Force -ErrorAction SilentlyContinue
 
     $targs = @()
     foreach ($e in $script:UExc) { $targs += @('--exclude', $e.Replace('\', '/')) }
@@ -769,7 +780,7 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$usrc) {
             Move-Item -LiteralPath $tmp -Destination $target -Force -ErrorAction Stop
         }
     } catch {
-        Get-ChildItem -LiteralPath $script:Staging -Filter "$fname*" -Force | Remove-Item -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath $script:Staging -Filter "$sname$ext*" -Force | Remove-Item -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $pending -Force -ErrorAction SilentlyContinue
         Write-Log 'ERROR' "[$key] could not move archive to ${target}: $($_.Exception.Message)"
         return $false
@@ -788,13 +799,12 @@ function Invoke-ArchiveUnit([string]$key, [string]$uname, [string]$usrc) {
 # Only changed files are copied.
 function Invoke-CopyFiles([string]$key, [string]$src, [string]$destdir) {
     $ok = $true
-    $files = Get-ChildItem -LiteralPath $src -File -Force | Where-Object { -not $_.Name.StartsWith('.') } | Sort-Object Name
+    $files = @(Get-CopyFiles $src)
+    if ($files.Count -eq 0) { Write-Log 'ERROR' "[$key] nothing to copy: no files in $src"; return $false }
     foreach ($f in $files) {
-        $skip = $false
-        foreach ($e in $script:UExc) { if ($f.Name -like $e) { $skip = $true } }
-        if ($skip) { continue }
-        $tname = (Get-Sanitized ([IO.Path]::GetFileNameWithoutExtension($f.Name))) + '_' + $script:Machine + [IO.Path]::GetExtension($f.Name)
+        $tname = Get-CopyName $f.Name
         $tgt = Join-Path $destdir $tname
+        if (Test-UnitClash $key $tgt) { $ok = $false; continue }
         if (Test-Path -LiteralPath $tgt) {
             $old = Get-Item -LiteralPath $tgt
             if ($old.Length -eq $f.Length -and (Get-FileHash -LiteralPath $tgt).Hash -eq (Get-FileHash -LiteralPath $f.FullName).Hash) {
@@ -815,6 +825,32 @@ function Invoke-CopyFiles([string]$key, [string]$src, [string]$destdir) {
         }
     }
     return $ok
+}
+
+# Excluded names are left out of copy mode and per_subfolder listings.
+function Test-Excluded([string]$name) {
+    foreach ($e in $script:UExc) { if ($name -like $e) { return $true } }
+    return $false
+}
+
+# copy mode: the files Invoke-CopyFiles copies from $src, and the name each gets in the drive folder.
+function Get-CopyFiles([string]$src) {
+    Get-ChildItem -LiteralPath $src -File -Force | Where-Object { -not $_.Name.StartsWith('.') -and -not (Test-Excluded $_.Name) } | Sort-Object Name
+}
+function Get-CopyName([string]$name) {
+    return (Get-Sanitized ([IO.Path]::GetFileNameWithoutExtension($name))) + '_' + $script:Machine + [IO.Path]::GetExtension($name)
+}
+
+# per_subfolder: the subfolders of $src that get their own archive.
+function Get-UnitSubfolders([string]$src) {
+    Get-ChildItem -LiteralPath $src -Directory -Force | Where-Object { -not $_.Name.StartsWith('.') -and -not (Test-Excluded $_.Name) } | Sort-Object Name
+}
+
+# An ASCII file name for a unit's files in the staging folder.
+function Get-StagingName([string]$key) {
+    $md5 = [Security.Cryptography.MD5]::Create()
+    try { $h = $md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($key)) } finally { $md5.Dispose() }
+    return 'unit-' + (($h[0..5] | ForEach-Object { $_.ToString('x2') }) -join '')
 }
 
 function Invoke-Job([string]$job) {
@@ -891,16 +927,12 @@ function Invoke-Job([string]$job) {
     } elseif (Test-True (Get-Cfg $job 'per_subfolder' 'false')) {
         # One archive per immediate subfolder (e.g. one per Prism instance).
         $found = $false
-        $subs = Get-ChildItem -LiteralPath $src -Directory -Force | Where-Object { -not $_.Name.StartsWith('.') } | Sort-Object Name
-        foreach ($d in $subs) {
-            $skip = $false
-            foreach ($e in $script:UExc) { if ($d.Name -like $e) { $skip = $true } }
-            if ($skip) { continue }
+        foreach ($d in (Get-UnitSubfolders $src)) {
             $found = $true
             $script:UInc = @('.')
             if (-not (Invoke-ArchiveUnit ("$job@" + (Get-Sanitized $d.Name)) $d.Name $d.FullName)) { $ok = $false }
         }
-        if (-not $found) { Write-Log 'WARN' "[$job] per_subfolder = true but no subfolders in $src" }
+        if (-not $found) { Write-Log 'ERROR' "[$job] per_subfolder = true but no subfolders in $src"; $ok = $false }
     } else {
         $script:UInc = @(Get-JobVals $job 'include')
         if ($script:UInc.Count -eq 0) { $script:UInc = @('.') }
@@ -911,8 +943,57 @@ function Invoke-Job([string]$job) {
         $sd = Join-Path $script:State 'stamps'
         New-Item -ItemType Directory -Force -Path $sd | Out-Null
         Set-Stamp (Join-Path $sd "$job.checked")
+        Remove-Item -LiteralPath (Join-Path $sd "$job.failed") -Force -ErrorAction SilentlyContinue
     }
     return $ok
+}
+
+# ---------------------------------------------------------------- name clashes
+
+# Each archive or copied file $job writes: Target is the path in the drive folder without the
+# archive extension; What names the source for messages.
+function Get-JobTargets([string]$job) {
+    if (-not (Test-True (Get-Cfg $job 'enabled' 'true'))) { return }
+    $srcRaw = Get-Cfg $job 'source'
+    $dest = (Get-Cfg $job 'dest').Trim('/', '\')
+    if (-not $srcRaw -or -not $dest) { return }
+    $src = Expand-Path $srcRaw
+    if (-not (Test-Path -LiteralPath $src -PathType Container)) { return }
+    $destdir = Join-Path $script:Drive (ConvertTo-NativePath $dest)
+    $script:UExc = @(Get-CfgVals 'global' 'exclude') + @(Get-JobVals $job 'exclude')
+    if ((Get-Cfg $job 'compress' 'zstd').ToLower() -eq 'copy') {
+        foreach ($f in (Get-CopyFiles $src)) { [pscustomobject]@{ Target = (Join-Path $destdir (Get-CopyName $f.Name)); What = "[$job] $($f.FullName)" } }
+    } elseif (Test-True (Get-Cfg $job 'per_subfolder' 'false')) {
+        foreach ($d in (Get-UnitSubfolders $src)) {
+            [pscustomobject]@{ Target = (Join-Path $destdir ((Get-Sanitized $d.Name) + '_' + $script:Machine)); What = "[$job] $($d.FullName)" }
+        }
+    } else {
+        [pscustomobject]@{ Target = (Join-Path $destdir ((Get-Sanitized $job) + '_' + $script:Machine)); What = "[$job]" }
+    }
+}
+
+# Targets that more than one archive or file would be saved as, from every enabled job (due or
+# not), so one can't overwrite another. Compared ignoring case, as most sync services do.
+$script:Clashes = @{}
+function Find-Clashes {
+    $byTarget = @{}
+    foreach ($job in (Get-CfgJobs)) {
+        foreach ($t in @(Get-JobTargets $job)) {
+            $k = $t.Target.ToLowerInvariant()
+            if (-not $byTarget.ContainsKey($k)) { $byTarget[$k] = @() }
+            $byTarget[$k] += $t.What
+        }
+    }
+    foreach ($k in @($byTarget.Keys)) { if ($byTarget[$k].Count -gt 1) { $script:Clashes[$k] = $byTarget[$k] } }
+}
+
+# Logs and returns $true when $target clashes with another archive or file, so the caller skips it.
+function Test-UnitClash([string]$key, [string]$target) {
+    $what = $script:Clashes[$target.ToLowerInvariant()]
+    if (-not $what) { return $false }
+    $rel = $target.Substring($script:Drive.Length).TrimStart('/', '\')
+    Write-Log 'ERROR' "[$key] not saved: $($what -join ' and ') share the name $rel; rename one of them"
+    return $true
 }
 
 # Once a day at most: warn about jobs with no recent successful backup. Every review_every
@@ -951,13 +1032,14 @@ function Invoke-Alerts {
 
 function Show-List {
     $fmt = '{0,-18} {1,-5} {2,-6} {3,-26} {4,-16} {5}'
-    Say ($fmt -f 'JOB', 'MODE', 'EVERY', 'DEST', 'LAST RUN', 'STATUS')
+    Say ($fmt -f 'JOB', 'MODE', 'EVERY', 'DEST', 'LAST OK', 'STATUS')
     foreach ($job in (Get-CfgJobs)) {
         $f = Join-Path (Join-Path $script:State 'stamps') "$job.checked"
         $last = 'never'
         if (Test-Path -LiteralPath $f) { $last = (Get-Item -LiteralPath $f).LastWriteTime.ToString('yyyy-MM-dd HH:mm') }
         $st = 'ok'
         if (-not (Test-True (Get-Cfg $job 'enabled' 'true'))) { $st = 'disabled' }
+        elseif (Test-Path -LiteralPath (Join-Path (Join-Path $script:State 'stamps') "$job.failed")) { $st = 'failed' }
         elseif (Test-JobStale $job) { $st = 'stale' }
         elseif (Test-JobDue $job (Get-Cfg $job 'every' '1d')) { $st = 'due' }
         Say ($fmt -f $job, (Get-Cfg $job 'compress' 'zstd'), (Get-Cfg $job 'every' '1d'), (Get-Cfg $job 'dest'), $last, $st)
@@ -1158,7 +1240,7 @@ if (-not $Add -and $Rest) {
 if ($Uninstall) { if (Uninstall-Task) { exit 0 } else { exit 1 } }
 if ($Edit) { if (Open-Cfg) { exit 0 } else { exit 1 } }
 if ($Install -and -not (Test-Path -LiteralPath $script:CfgPath -PathType Leaf)) {
-    if (New-CfgFromTemplate) { Say 'Set drive_root and machine in it (-Edit), then run -Install again.' }
+    if (New-CfgFromTemplate) { Say 'Set drive_root in it (-Edit), then run -Install again.' }
     exit 1
 }
 if (-not (Test-Path -LiteralPath $script:CfgPath -PathType Leaf)) {
@@ -1188,6 +1270,10 @@ New-Item -ItemType Directory -Force -Path (Join-Path $script:State 'stamps') | O
 
 if ($List) { Show-List; exit 0 }
 
+if ($script:Drive -like '*YOUR_SYNC_FOLDER*') {
+    Write-Log 'ERROR' "drive_root is still the template's example. Set it to a folder in your sync folder: .\AutoBackup.ps1 -Edit"
+    exit 1
+}
 # Refuse to run if the sync folder's parent is missing (sync app not installed, or drive not mounted).
 $driveParent = Split-Path -Parent $script:Drive
 if (-not (Test-Path -LiteralPath $driveParent -PathType Container)) {
@@ -1219,8 +1305,12 @@ try {
         }
         $jobs = $script:OptOnly
     }
+    Find-Clashes
     foreach ($job in $jobs) {
-        if (-not (Invoke-Job $job)) { $failed += $job }
+        if (-not (Invoke-Job $job)) {
+            $failed += $job
+            if (-not $script:OptDry) { Set-Stamp (Join-Path (Join-Path $script:State 'stamps') "$job.failed") }
+        }
     }
     if (-not $script:OptDry) {
         if ($failed.Count -gt 0) { Send-Notify "Failed: $($failed -join ', '). See autobackup.log." }

@@ -33,7 +33,7 @@ git clone https://github.com/emiabo/autobackup.git $HOME\Code\autobackup; cd $HO
 .\AutoBackup.ps1 -Install    # hourly + at logon
 ```
 
-Setting `drive_root` and `machine` is the only required edit. [SETUP.md](SETUP.md) covers the details: sync-app settings, macOS privacy permissions, and what `--install` sets up on each platform.
+Setting `drive_root` is the only required edit. `--edit` sets `machine` to this computer's name. [SETUP.md](SETUP.md) covers the details: sync-app settings, macOS privacy permissions, and what `--install` sets up on each platform.
 
 ## Files
 
@@ -77,7 +77,8 @@ AutoBackup/
 
 Naming is `<name>_<machine><ext>`:
 
-- `<name>` is the job name, or the subfolder name for `per_subfolder` jobs. Anything outside `A-Z a-z 0-9 . _ -` becomes `-`.
+- `<name>` is the job name, or the subfolder name for `per_subfolder` jobs. ASCII characters other than `A-Z a-z 0-9 . _ -` become `-`; accented letters and other scripts are kept.
+- Two sources whose names come out the same (`My World` and `My-World`, or `Notes` and `notes`) would overwrite each other, so neither is saved. The run fails and names both; rename one.
 - With `keep` above 1, a timestamp is added: `notes_MyMac_2026-09-27_130512.tar.zst`.
 - With `chunk_size`, the archive is stored as numbered parts: `.tar.zst.001`, `.002`, ...
 - In `copy` mode the machine suffix goes before the extension (`Brewfile_MyMac`, `installed_MyPC.csv`).
@@ -89,6 +90,7 @@ For each job in the config (or only the jobs named by `--only`):
 1. **Skip it** if disabled, if not due (`stamps/<job>.checked` is younger than `every`), or if a process in `skip_if_running` is running. Nothing is recorded, so the job retries next run.
 2. **Run `pre`** if set: `/bin/sh -c` on macOS/Linux, `Invoke-Expression` on Windows. A non-zero exit fails the job.
 3. **Build each unit.** A job is one archive, or one per subfolder with `per_subfolder = true`.
+   - **Fail it** if none of its includes exist, or a `per_subfolder` source has no subfolders, or a `copy` source has no files. A job that backs up nothing isn't a success.
    - **Skip if unchanged** when all of these hold: the archive exists in the drive folder; `stamps/<unit>.last` records the same settings, includes and excludes; and no file or folder under the includes, other than excluded ones, is newer than that stamp.
    - **Otherwise build it.** If the unit contains git repos, `.gitignore` rules pick the files (below). tar writes to the staging folder, gets compressed, and is optionally cut into parts, then moved (renamed) into the drive folder.
    - The stamp is written **before** tar starts. Files that change mid-archive are therefore caught next run.
@@ -97,7 +99,7 @@ For each job in the config (or only the jobs named by `--only`):
 
 After all jobs:
 
-- A **failure** logs an error and shows a notification. The job isn't marked checked, so it retries next hour. A failed build never replaces the archive already in the drive folder.
+- A **failure** logs an error and shows a notification. The job isn't marked checked, so it retries next hour, and `--list` shows it as `failed` until a run succeeds. A failed build never replaces the archive already in the drive folder.
 - A job with **no successful pass for `alert_after`** (default: 3× its `every`, at least a day) is logged and notified, at most once a day. This catches jobs that never fail but never run either, like a `skip_if_running` process that's always open.
 - Every **`review_every`** (default 90 days) you get a reminder to check the job list still covers what matters. Editing the config resets the clock.
 
@@ -110,13 +112,13 @@ To force a job to be due again, delete its `.checked` stamp. To force a full reb
 | bash | PowerShell | Effect |
 |---|---|---|
 | *(no flags)* | *(no flags)* | Run every job that is due. This is what the scheduler calls. |
-| `-l`, `--list` | `-List` | Jobs, last successful pass, and ok/due/stale/disabled. |
+| `-l`, `--list` | `-List` | Jobs, last successful pass, and ok/due/failed/stale/disabled. |
 | `-n`, `--dry-run` | `-DryRun` | Show what would be written. Changes nothing, runs no `pre`. |
 | `-v`, `--verbose` | `-Verbose` | Also show not-due, unchanged, and missing-include details. |
 | `-o JOB`, `--only JOB[,JOB]` | `-Only JOB[,JOB]` | Run just these jobs, ignoring the schedule. The unchanged check still applies. |
 | `-f`, `--force` | `-Force` | Ignore the schedule and the unchanged check. |
 | `-a [JOB] [k=v ...]`, `--add` | `-Add [JOB] [k=v ...]` | Append a job to the config. Prompts interactively when no `k=v` pairs are given, and suggests [rulegroups](#rulegroups) for known folders. |
-| `-e`, `--edit` | `-Edit` | Open the config in `$VISUAL`/`$EDITOR` (fallback: TextEdit, `xdg-open`, Notepad). Creates it from the template first, along with a copy of `rulegroups.ini`. |
+| `-e`, `--edit` | `-Edit` | Open the config in `$VISUAL`/`$EDITOR` (fallback: TextEdit, `xdg-open`, Notepad). Creates it from the template first, with `machine` set to this computer's name, along with a copy of `rulegroups.ini`. |
 | `--install` | `-Install` | Schedule hourly + login runs (LaunchAgent, systemd user timer, or Task Scheduler). |
 | `--uninstall` | `-Uninstall` | Remove the schedule. Config, state and archives stay. |
 | `-c FILE`, `--config FILE` | `-Config FILE` | Use another config file. `$AUTOBACKUP_CONFIG` does the same. |
@@ -157,7 +159,7 @@ Path expansion applies to `source`, `drive_root`, `state`, `staging`, and `pre`:
 | Key | Default | Meaning |
 |---|---|---|
 | `drive_root` | *(required)* | Folder archives go into, inside the sync folder. Its parent must exist, or the run aborts. |
-| `machine` | *(required)* | Suffix for every archive name (`MyMac`, `MyPC`). |
+| `machine` | *(required)* | Suffix for every archive name (`MyMac`, `MyPC`). Must differ per computer. `--edit` sets it to the computer's name. |
 | `state`, `staging` | see Files | Override the state and staging folders. Staging must be on the same volume as `drive_root` (`--list` warns if not). |
 | `review_every` | `90d` | How often to remind you to review the job list. `0` turns it off. |
 
@@ -249,7 +251,7 @@ AutoBackup doesn't encrypt archives. That's what makes them openable with any ar
 
 **Where secrets hide in a backup**
 
-- Tool config folders can hold tokens in plain text. The templates back up `~/.config`, so check it. For example, `gh` keeps its token in the system keychain when one is available, but otherwise writes it to `~/.config/gh/hosts.yml`, which is common on Linux without a keyring.
+- Tool config folders can hold tokens in plain text. The templates back up `~/.config`, so check it. On Linux, browsers and Electron apps keep their profiles there too; the Linux template excludes their cookies, saved logins, autofill, history and site storage. For example, `gh` keeps its token in the system keychain when one is available, but otherwise writes it to `~/.config/gh/hosts.yml`, which is common on Linux without a keyring.
 - `.ssh/config` in the templates holds host settings only. Private keys (`~/.ssh/id_*`) aren't included.
 - The rulegroups leave out the credential files they know about: Codex `auth.json`, and Helium cookies and saved passwords. Prism's `accounts.json` sits outside `instances/`, so the Minecraft job never sees it.
 - Agent transcripts and shell history can contain anything that was pasted into them. The rulegroups leave them out, and the templates don't include shell history.

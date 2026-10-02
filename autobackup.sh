@@ -102,8 +102,12 @@ is_true() {
     esac
 }
 
+# Name for archives and copied files: ASCII other than letters, digits and . _ - becomes -, so
+# names stay valid on every platform. Non-ASCII characters (accents, other scripts) are kept;
+# working on bytes (LC_ALL=C) keeps multibyte characters whole.
+AB_NONASCII="$(printf '\200')-$(printf '\377')"
 sanitize() {
-    printf '%s\n' "$1" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//'
+    printf '%s\n' "$1" | LC_ALL=C sed -E "s/[^A-Za-z0-9._${AB_NONASCII}-]+/-/g; s/^-+//; s/-+\$//"
 }
 
 trim() {
@@ -351,14 +355,31 @@ rulegroups_file() {
     else printf '%s\n' "$AB_RULEGROUPS_SHIPPED"; fi
 }
 
+# This computer's name, made safe for archive names: the Bonjour name on macOS (Emilias-MacBook),
+# the host name elsewhere.
+computer_name() {
+    local n=''
+    [ "$AB_OS" = Darwin ] && n=$(scutil --get LocalHostName 2>/dev/null)
+    [ -n "$n" ] || n=$(uname -n)
+    sanitize "${n%%.*}"
+}
+
 # Creates the config from templates/<platform>.ini if it doesn't exist yet, with a copy of the
 # shipped rulegroups.ini next to it for the user to extend.
 cfg_create() {
-    local tpl="$AB_HERE/templates/$AB_PLATFORM.ini" own
+    local tpl="$AB_HERE/templates/$AB_PLATFORM.ini" own machine
     [ -f "$AB_CONFIG" ] && return 0
     [ -f "$tpl" ] || { echo "Config not found: $AB_CONFIG (and no template at $tpl)" >&2; return 1; }
-    mkdir -p "$(dirname "$AB_CONFIG")" && cp "$tpl" "$AB_CONFIG" || return 1
+    mkdir -p "$(dirname "$AB_CONFIG")" || return 1
+    # Each computer needs its own machine name, or two of them overwrite each other's archives.
+    machine=$(computer_name)
+    if [ -n "$machine" ]; then
+        sed "s/^machine = .*/machine = $machine/" "$tpl" >"$AB_CONFIG" || return 1
+    else
+        cp "$tpl" "$AB_CONFIG" || return 1
+    fi
     echo "Created $AB_CONFIG from $tpl"
+    if [ -n "$machine" ]; then echo "Set machine = $machine"; fi
     own="$(dirname "$AB_CONFIG")/rulegroups.ini"
     if [ ! -f "$own" ] && [ -f "$AB_RULEGROUPS_SHIPPED" ]; then
         cp "$AB_RULEGROUPS_SHIPPED" "$own" || return 1
@@ -688,6 +709,7 @@ archive_unit() {
     base="$(sanitize "$uname")_$AB_MACHINE"
     ext=$(method_ext "$J_METHOD")
     stamp="$AB_STATE/stamps/$key.last"
+    unit_clash "$key" "$J_DESTDIR/$base" && return 1
 
     local incs=()
     for i in "${AB_U_INC[@]}"; do
@@ -695,8 +717,8 @@ archive_unit() {
         else vlog "[$key] include not found, skipped: $i"; fi
     done
     if [ ${#incs[@]} -eq 0 ]; then
-        log WARN "[$key] nothing to archive under $usrc"
-        return 0
+        log ERROR "[$key] nothing to archive: none of the includes exist under $usrc"
+        return 1
     fi
 
     # The descriptor records what produced the archive; editing the job forces a rebuild.
@@ -789,22 +811,12 @@ archive_unit() {
 # copy mode: flat copy of the files directly inside SOURCE, renamed NAME_MACHINE.ext.
 # Only changed files are copied.
 copy_files() {
-    local key="$1" src="$2" destdir="$3" fail=0 f name skip e stem ext tname tgt
-    for f in "$src"/*; do
-        [ -f "$f" ] || continue
-        name=$(basename "$f")
-        skip=0
-        for e in "${AB_U_EXC[@]}"; do
-            # shellcheck disable=SC2254
-            case "$name" in $e) skip=1 ;; esac
-        done
-        [ $skip -eq 1 ] && continue
-        case "$name" in
-            ?*.*) stem="${name%.*}"; ext=".${name##*.}" ;;
-            *) stem="$name"; ext='' ;;
-        esac
-        tname="$(sanitize "$stem")_$AB_MACHINE$ext"
+    local key="$1" src="$2" destdir="$3" fail=0 found=0 f name tname tgt
+    while IFS="$AB_SEP" read -r name tname; do
+        found=1
+        f="$src/$name"
         tgt="$destdir/$tname"
+        if unit_clash "$key" "$tgt"; then fail=1; continue; fi
         if [ -e "$tgt" ] && cmp -s "$f" "$tgt"; then
             vlog "[$key] unchanged: $tname"; continue
         fi
@@ -817,8 +829,46 @@ copy_files() {
         else
             log ERROR "[$key] could not copy $f"; fail=1
         fi
-    done
+    done < <(copy_names "$src")
+    if [ $found -eq 0 ]; then
+        log ERROR "[$key] nothing to copy: no files in $src"; fail=1
+    fi
     return $fail
+}
+
+# Excluded names are left out of copy mode and per_subfolder listings.
+is_excluded() {
+    local e
+    for e in "${AB_U_EXC[@]}"; do
+        # shellcheck disable=SC2254
+        case "$1" in $e) return 0 ;; esac
+    done
+    return 1
+}
+
+# copy mode: "NAME<sep>TARGET NAME" for each file copy_files copies from SRC.
+copy_names() {
+    local f name stem ext
+    for f in "$1"/*; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f")
+        is_excluded "$name" && continue
+        case "$name" in
+            ?*.*) stem="${name%.*}"; ext=".${name##*.}" ;;
+            *) stem="$name"; ext='' ;;
+        esac
+        printf '%s\n' "$name$AB_SEP$(sanitize "$stem")_$AB_MACHINE$ext"
+    done
+}
+
+# per_subfolder: the subfolders of SRC that get their own archive.
+unit_subfolders() {
+    local d sub
+    for d in "$1"/*/; do
+        [ -d "$d" ] || continue
+        sub=$(basename "$d")
+        is_excluded "$sub" || printf '%s\n' "$sub"
+    done
 }
 
 run_job() {
@@ -893,21 +943,15 @@ run_job() {
         copy_files "$job" "$src" "$J_DESTDIR" || fail=1
     elif is_true "$(cfg_get "$job" per_subfolder false)"; then
         # One archive per immediate subfolder (e.g. one per Prism instance).
-        local found=0 d sub skip e
-        for d in "$src"/*/; do
-            [ -d "$d" ] || continue
-            sub=$(basename "$d")
-            skip=0
-            for e in "${AB_U_EXC[@]}"; do
-                # shellcheck disable=SC2254
-                case "$sub" in $e) skip=1 ;; esac
-            done
-            [ $skip -eq 1 ] && continue
+        local found=0 sub
+        while IFS= read -r sub; do
             found=1
             AB_U_INC=(.)
             archive_unit "$job@$(sanitize "$sub")" "$sub" "$src/$sub" || fail=1
-        done
-        [ $found -eq 0 ] && log WARN "[$job] per_subfolder = true but no subfolders in $src"
+        done < <(unit_subfolders "$src")
+        if [ $found -eq 0 ]; then
+            log ERROR "[$job] per_subfolder = true but no subfolders in $src"; fail=1
+        fi
     else
         AB_U_INC=()
         while IFS= read -r l; do AB_U_INC+=("$l"); done < <(job_vals "$job" include)
@@ -918,8 +962,68 @@ run_job() {
     if [ $fail -eq 0 ] && [ "$opt_dry" -eq 0 ]; then
         mkdir -p "$AB_STATE/stamps"
         touch "$AB_STATE/stamps/$job.checked"
+        rm -f "$AB_STATE/stamps/$job.failed"
     fi
     return $fail
+}
+
+# ---------------------------------------------------------------- name clashes
+
+# "TARGET<sep>WHAT" for each archive or copied file JOB writes. TARGET is the path in the drive
+# folder without the archive extension; WHAT names the source for messages.
+job_targets() {
+    local job="$1" src dest destdir name tname l
+    is_true "$(cfg_get "$job" enabled true)" || return 0
+    src=$(expand_path "$(cfg_get "$job" source)")
+    dest=$(cfg_get "$job" dest); dest="${dest#/}"; dest="${dest%/}"
+    { [ -n "$dest" ] && [ -d "$src" ]; } || return 0
+    destdir="$AB_DRIVE/$dest"
+    AB_U_EXC=()
+    while IFS= read -r l; do AB_U_EXC+=("$l"); done < <(cfg_vals global exclude; job_vals "$job" exclude)
+    if [ "$(cfg_get "$job" compress zstd | tr '[:upper:]' '[:lower:]')" = copy ]; then
+        while IFS="$AB_SEP" read -r name tname; do
+            printf '%s\n' "$destdir/$tname${AB_SEP}[$job] $src/$name"
+        done < <(copy_names "$src")
+    elif is_true "$(cfg_get "$job" per_subfolder false)"; then
+        while IFS= read -r name; do
+            printf '%s\n' "$destdir/$(sanitize "$name")_$AB_MACHINE${AB_SEP}[$job] $src/$name"
+        done < <(unit_subfolders "$src")
+    else
+        printf '%s\n' "$destdir/$(sanitize "$job")_$AB_MACHINE${AB_SEP}[$job]"
+    fi
+}
+
+# Targets that more than one archive or file would be saved as, from every enabled job (due or
+# not), so one can't overwrite another. Compared ignoring case, as most sync services do.
+AB_CLASHES=''
+find_clashes() {
+    local all dups j l t
+    all=$(while IFS= read -r j; do job_targets "$j"; done < <(cfg_jobs))
+    dups=$(printf '%s\n' "$all" | cut -d "$AB_SEP" -f 1 | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C sort | LC_ALL=C uniq -d)
+    [ -n "$dups" ] || return 0
+    AB_CLASHES=$(printf '%s\n' "$all" | while IFS= read -r l; do
+        t=$(printf '%s' "${l%%"$AB_SEP"*}" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+        printf '%s\n' "$dups" | grep -qxF -- "$t" && printf '%s\n' "$t$AB_SEP${l#*"$AB_SEP"}"
+    done)
+}
+
+# Logs and succeeds when TARGET clashes with another archive or file, so the caller skips it.
+unit_clash() {
+    local key="$1" t what
+    [ -n "$AB_CLASHES" ] || return 1
+    t=$(printf '%s' "$2" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    what=$(printf '%s\n' "$AB_CLASHES" | while IFS= read -r l; do
+        [ "${l%%"$AB_SEP"*}" = "$t" ] && printf '%s\n' "${l#*"$AB_SEP"}"
+    done)
+    [ -n "$what" ] || return 1
+    log ERROR "[$key] not saved: $(printf '%s\n' "$what" | joined_lines) share the name ${2#"$AB_DRIVE"/}; rename one of them"
+    return 0
+}
+
+joined_lines() {
+    local l out=''
+    while IFS= read -r l; do out="${out:+$out and }$l"; done
+    printf '%s' "$out"
 }
 
 # Once a day at most: warn about jobs with no recent successful backup. Every review_every
@@ -958,13 +1062,14 @@ check_alerts() {
 
 cmd_list() {
     local job f last st
-    printf '%-18s %-5s %-6s %-26s %-16s %s\n' JOB MODE EVERY DEST 'LAST RUN' STATUS
+    printf '%-18s %-5s %-6s %-26s %-16s %s\n' JOB MODE EVERY DEST 'LAST OK' STATUS
     while IFS= read -r job; do
         f="$AB_STATE/stamps/$job.checked"
         last=never
         [ -e "$f" ] && last=$(fmt_epoch "$(mtime "$f")")
         st=ok
         if ! is_true "$(cfg_get "$job" enabled true)"; then st=disabled
+        elif [ -e "$AB_STATE/stamps/$job.failed" ]; then st=failed
         elif job_stale "$job"; then st=stale
         elif job_due "$job" "$(cfg_get "$job" every 1d)"; then st=due; fi
         printf '%-18s %-5s %-6s %-26s %-16s %s\n' "$job" "$(cfg_get "$job" compress zstd)" \
@@ -1253,7 +1358,7 @@ if [ $want_uninstall -eq 1 ]; then cmd_uninstall; exit $?; fi
 if [ $want_edit -eq 1 ]; then cmd_edit; exit $?; fi
 if [ $want_install -eq 1 ] && [ ! -f "$AB_CONFIG" ]; then
     cfg_create || exit 1
-    echo "Set drive_root and machine in it (--edit), then run --install again."
+    echo "Set drive_root in it (--edit), then run --install again."
     exit 1
 fi
 if [ ! -f "$AB_CONFIG" ]; then
@@ -1284,6 +1389,11 @@ if [ $want_list -eq 1 ]; then
     cmd_list; exit 0
 fi
 
+case "$AB_DRIVE" in
+    *YOUR_SYNC_FOLDER*)
+        log ERROR "drive_root is still the template's example. Set it to a folder in your sync folder: $AB_SELF --edit"
+        exit 1 ;;
+esac
 # Refuse to run if the sync folder's parent is missing (sync app not installed, or drive not mounted).
 if [ ! -d "$(dirname "$AB_DRIVE")" ]; then
     log ERROR "drive_root parent does not exist: $(dirname "$AB_DRIVE") (is the sync app running?)"
@@ -1314,9 +1424,13 @@ if [ ${#opt_only[@]} -gt 0 ]; then
     jobs=("${opt_only[@]}")
 fi
 
+find_clashes
 failed=()
 for job in "${jobs[@]}"; do
-    run_job "$job" || failed+=("$job")
+    if ! run_job "$job"; then
+        failed+=("$job")
+        [ "$opt_dry" -eq 0 ] && touch "$AB_STATE/stamps/$job.failed"
+    fi
 done
 
 if [ "$opt_dry" -eq 0 ]; then
