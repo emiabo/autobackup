@@ -158,6 +158,32 @@ Describe '<Impl>' -ForEach $impls {
         Get-Entries (Join-Path $drive 'Games/Two_T.tar') | Should -Be @('b.txt')
     }
 
+    It 'keeps non-Latin folder names, and refuses archives whose names clash' {
+        $world = [string][char]0x4E16 + [char]0x754C
+        $kana = [string][char]0x30EF + [char]0x30FC + [char]0x30EB + [char]0x30C9
+        foreach ($d in 'My World', 'My-World', $world, $kana, 'ok') { New-File (Join-Path $src "$d/a.txt") }
+        Set-Jobs "[games]`nsource = $src`ndest = Games`ncompress = none`nper_subfolder = true`n"
+
+        $r = Invoke-AB '--force'
+        $r.Code | Should -Not -Be 0
+        $r.Text | Should -Match 'share the name Games[\\/]My-World_T'
+        $r.Text | Should -Not -Match 'archiving failed'
+        Get-DriveFiles 'Games' | Should -Be @(@("${kana}_T.tar", "${world}_T.tar", 'ok_T.tar') | Sort-Object)
+        (Invoke-AB '--list').Text | Should -Match 'games\s.*\sfailed'
+    }
+
+    It 'fails a job with nothing to archive, and lists it as failed until it succeeds' {
+        Set-Jobs "[empty]`nsource = $src`ndest = Empty`ncompress = none`ninclude = missing`n"
+
+        (Invoke-AB '--force').Code | Should -Not -Be 0
+        Test-Path (Join-Path $state 'stamps/empty.checked') | Should -BeFalse
+        (Invoke-AB '--list').Text | Should -Match 'empty\s.*\sfailed'
+
+        New-File (Join-Path $src 'missing/a.txt')
+        (Invoke-AB '--force').Code | Should -Be 0
+        (Invoke-AB '--list').Text | Should -Match 'empty\s.*\sok'
+    }
+
     It 'copies top-level files with the machine suffix in copy mode' {
         New-File (Join-Path $src 'list.tsv') "a`tb"
         New-File (Join-Path $src '.hidden') 'no'
@@ -312,6 +338,15 @@ Describe '<Impl>' -ForEach $impls {
         $r.Code | Should -Be 1
         Test-Path $conf | Should -BeTrue
         [IO.File]::ReadAllText($rulegroups) | Should -Be ([IO.File]::ReadAllText((Join-Path $repo 'rulegroups.ini')))
+        [IO.File]::ReadAllText($conf) | Should -Match '(?m)^machine = [A-Za-z0-9]'
+        [IO.File]::ReadAllText($conf) | Should -Not -Match '(?m)^machine = My(Mac|PC|Linux)\s*$'
+    }
+
+    It "says so when drive_root is still the template's example" {
+        [IO.File]::WriteAllText($conf, "[global]`ndrive_root = ~/YOUR_SYNC_FOLDER/AutoBackup`nmachine = T`nstate = $state`nstaging = $staging`n")
+        $r = Invoke-AB '--dry-run'
+        $r.Code | Should -Not -Be 0
+        $r.Text | Should -Match "drive_root is still the template's example"
     }
 
     It 'adds a job that uses a rulegroup without asking for its source' {
